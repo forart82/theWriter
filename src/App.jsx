@@ -664,6 +664,10 @@ export default function App() {
 
   // Start the Game
   const startGame = () => {
+    if (!auth.currentUser) {
+      triggerNotification("Veuillez d'abord vous connecter avec Google !", "error");
+      return;
+    }
     setGameMode('play');
     setIsPlaying(true);
     setIsPaused(false);
@@ -906,9 +910,24 @@ export default function App() {
                 </ul>
               </div>
 
-              <button className="start-btn" onClick={startGame}>
-                Démarrer la partie <ArrowRight size={18} />
-              </button>
+              {user ? (
+                <button className="start-btn" onClick={startGame}>
+                  Démarrer la partie <ArrowRight size={18} />
+                </button>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem', width: '100%' }}>
+                  <button 
+                    className="start-btn" 
+                    onClick={handleSignInWithGoogle}
+                    style={{ background: 'linear-gradient(135deg, #ea4335 0%, #4285f4 100%)', boxShadow: '0 4px 15px rgba(234, 67, 53, 0.2)' }}
+                  >
+                    <LogIn size={18} /> Connectez-vous avec Google pour jouer
+                  </button>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--color-error)', display: 'flex', alignItems: 'center', gap: '0.3rem', fontWeight: 500 }}>
+                    <AlertCircle size={14} /> La connexion est requise pour démarrer la partie.
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Right side: settings & history */}

@@ -18,6 +18,8 @@ import {
 } from 'lucide-react';
 import { getWordsForLevel, totalWordsCount, totalPhrasesCount } from './words';
 import './App.css'; // kept for clean loading, but index.css does the heavy lifting
+import { db } from './firebase';
+import { doc, getDoc, setDoc, collection, addDoc, getDocs, query, orderBy, limit } from 'firebase/firestore';
 
 // Fisher-Yates array shuffling utility
 const shuffleArray = (array) => {
@@ -32,6 +34,7 @@ const shuffleArray = (array) => {
 export default function App() {
   // Game Setup & Modes
   const [gameMode, setGameMode] = useState('dashboard'); // 'dashboard', 'elision', 'tense'
+  const [userId, setUserId] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   
@@ -106,8 +109,77 @@ export default function App() {
     }
   }, [level, isPlaying]);
 
-  // Load history from localStorage on mount
+  // Load settings from Firestore
+  const loadSettingsFromFirestore = async (uid) => {
+    try {
+      const docRef = doc(db, 'users', uid, 'config', 'settings');
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.speechRate !== undefined) setSpeechRate(data.speechRate);
+        if (data.speechPitch !== undefined) setSpeechPitch(data.speechPitch);
+        if (data.selectedVoice !== undefined) setSelectedVoice(data.selectedVoice);
+        if (data.ttsEngine !== undefined) setTtsEngine(data.ttsEngine);
+        if (data.minWordSpeed !== undefined) setMinWordSpeed(data.minWordSpeed);
+        if (data.maxWordSpeed !== undefined) setMaxWordSpeed(data.maxWordSpeed);
+      }
+    } catch (e) {
+      console.warn("Could not load settings from Firestore, using local defaults", e);
+    }
+  };
+
+  // Save settings to Firestore
+  const saveSettingsToFirestore = async (uid, settingsUpdate) => {
+    try {
+      const docRef = doc(db, 'users', uid, 'config', 'settings');
+      await setDoc(docRef, settingsUpdate, { merge: true });
+    } catch (e) {
+      console.warn("Could not save settings to Firestore", e);
+    }
+  };
+
+  // Load history from Firestore
+  const loadHistoryFromFirestore = async (uid) => {
+    try {
+      const colRef = collection(db, 'users', uid, 'history');
+      const q = query(colRef, orderBy('timestamp', 'desc'), limit(10));
+      const querySnapshot = await getDocs(q);
+      const items = [];
+      querySnapshot.forEach((doc) => {
+        items.push(doc.data());
+      });
+      if (items.length > 0) {
+        setHistory(items);
+      }
+    } catch (e) {
+      console.warn("Could not load history from Firestore", e);
+    }
+  };
+
+  // Save history item to Firestore
+  const saveHistoryToFirestore = async (uid, session) => {
+    try {
+      const colRef = collection(db, 'users', uid, 'history');
+      await addDoc(colRef, {
+        ...session,
+        timestamp: new Date().getTime()
+      });
+    } catch (e) {
+      console.warn("Could not save session history to Firestore", e);
+    }
+  };
+
+  // Load history and configuration on mount
   useEffect(() => {
+    // Generate/Load unique user ID for Firestore syncing
+    let uid = localStorage.getItem('thewriter_uid');
+    if (!uid) {
+      uid = 'user_' + Math.random().toString(36).substring(2, 11);
+      localStorage.setItem('thewriter_uid', uid);
+    }
+    setUserId(uid);
+
+    // Initial load from local storage
     const savedHistory = localStorage.getItem('thewriter_history');
     if (savedHistory) {
       try {
@@ -116,6 +188,22 @@ export default function App() {
         console.error('Failed to parse game history', e);
       }
     }
+
+    const savedRate = localStorage.getItem('thewriter_speech_rate');
+    if (savedRate) setSpeechRate(parseFloat(savedRate));
+    const savedPitch = localStorage.getItem('thewriter_speech_pitch');
+    if (savedPitch) setSpeechPitch(parseFloat(savedPitch));
+    
+    const savedTtsEngine = localStorage.getItem('thewriter_tts_engine');
+    if (savedTtsEngine) setTtsEngine(savedTtsEngine);
+    const savedMinSpeed = localStorage.getItem('thewriter_min_word_speed');
+    if (savedMinSpeed !== null) setMinWordSpeed(parseFloat(savedMinSpeed));
+    const savedMaxSpeed = localStorage.getItem('thewriter_max_word_speed');
+    if (savedMaxSpeed !== null) setMaxWordSpeed(parseFloat(savedMaxSpeed));
+
+    // Try loading fresher data from Firestore
+    loadSettingsFromFirestore(uid);
+    loadHistoryFromFirestore(uid);
 
     // Speech Synthesis initialization
     if ('speechSynthesis' in window) {
@@ -138,58 +226,55 @@ export default function App() {
       getSpeechVoices();
       window.speechSynthesis.onvoiceschanged = getSpeechVoices;
     }
-
-    // Load saved speech rate/pitch
-    const savedRate = localStorage.getItem('thewriter_speech_rate');
-    if (savedRate) setSpeechRate(parseFloat(savedRate));
-    const savedPitch = localStorage.getItem('thewriter_speech_pitch');
-    if (savedPitch) setSpeechPitch(parseFloat(savedPitch));
-    
-    const savedTtsEngine = localStorage.getItem('thewriter_tts_engine');
-    if (savedTtsEngine) setTtsEngine(savedTtsEngine);
-    const savedMinSpeed = localStorage.getItem('thewriter_min_word_speed');
-    if (savedMinSpeed !== null) setMinWordSpeed(parseFloat(savedMinSpeed));
-    const savedMaxSpeed = localStorage.getItem('thewriter_max_word_speed');
-    if (savedMaxSpeed !== null) setMaxWordSpeed(parseFloat(savedMaxSpeed));
   }, []);
 
-  // Sync settings to localStorage
+  // Sync settings to localStorage and Firestore
   const handleRateChange = (rate) => {
     setSpeechRate(rate);
     localStorage.setItem('thewriter_speech_rate', rate);
+    if (userId) saveSettingsToFirestore(userId, { speechRate: rate });
   };
 
   const handlePitchChange = (pitch) => {
     setSpeechPitch(pitch);
     localStorage.setItem('thewriter_speech_pitch', pitch);
+    if (userId) saveSettingsToFirestore(userId, { speechPitch: pitch });
   };
 
   const handleVoiceChange = (voiceURI) => {
     setSelectedVoice(voiceURI);
     localStorage.setItem('thewriter_selected_voice', voiceURI);
+    if (userId) saveSettingsToFirestore(userId, { selectedVoice: voiceURI });
   };
 
   const handleTtsEngineChange = (engine) => {
     setTtsEngine(engine);
     localStorage.setItem('thewriter_tts_engine', engine);
+    if (userId) saveSettingsToFirestore(userId, { ttsEngine: engine });
   };
 
   const handleMinWordSpeedChange = (val) => {
     setMinWordSpeed(val);
     localStorage.setItem('thewriter_min_word_speed', val);
+    let updatedMax = maxWordSpeed;
     if (val > maxWordSpeed) {
+      updatedMax = val;
       setMaxWordSpeed(val);
       localStorage.setItem('thewriter_max_word_speed', val);
     }
+    if (userId) saveSettingsToFirestore(userId, { minWordSpeed: val, maxWordSpeed: updatedMax });
   };
 
   const handleMaxWordSpeedChange = (val) => {
     setMaxWordSpeed(val);
     localStorage.setItem('thewriter_max_word_speed', val);
+    let updatedMin = minWordSpeed;
     if (val < minWordSpeed) {
+      updatedMin = val;
       setMinWordSpeed(val);
       localStorage.setItem('thewriter_min_word_speed', val);
     }
+    if (userId) saveSettingsToFirestore(userId, { maxWordSpeed: val, minWordSpeed: updatedMin });
   };
 
   // Text-To-Speech Pronunciation with Cloud voice option
@@ -596,6 +681,10 @@ export default function App() {
     const newHistory = [session, ...history].slice(0, 10);
     setHistory(newHistory);
     localStorage.setItem('thewriter_history', JSON.stringify(newHistory));
+
+    if (userId) {
+      saveHistoryToFirestore(userId, session);
+    }
   };
 
   // Accent clicking helper

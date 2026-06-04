@@ -14,12 +14,15 @@ import {
   AlertCircle,
   ArrowRight,
   Info,
-  Calendar
+  Calendar,
+  LogIn,
+  LogOut
 } from 'lucide-react';
 import { getWordsForLevel, totalWordsCount, totalPhrasesCount } from './words';
 import './App.css'; // kept for clean loading, but index.css does the heavy lifting
-import { db } from './firebase';
+import { db, auth, googleProvider } from './firebase';
 import { doc, getDoc, setDoc, collection, addDoc, getDocs, query, orderBy, limit } from 'firebase/firestore';
+import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 
 // Fisher-Yates array shuffling utility
 const shuffleArray = (array) => {
@@ -35,6 +38,7 @@ export default function App() {
   // Game Setup & Modes
   const [gameMode, setGameMode] = useState('dashboard'); // 'dashboard', 'elision', 'tense'
   const [userId, setUserId] = useState('');
+  const [user, setUser] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   
@@ -109,6 +113,26 @@ export default function App() {
     }
   }, [level, isPlaying]);
 
+  // Google Authentication Handlers
+  const handleSignInWithGoogle = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+      triggerNotification("Connexion réussie !", "success");
+    } catch (e) {
+      console.error("Google Sign-In failed", e);
+      triggerNotification("Échec de la connexion", "error");
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      triggerNotification("Déconnexion réussie", "success");
+    } catch (e) {
+      console.error("Sign-Out failed", e);
+    }
+  };
+
   // Load settings from Firestore
   const loadSettingsFromFirestore = async (uid) => {
     try {
@@ -169,17 +193,9 @@ export default function App() {
     }
   };
 
-  // Load history and configuration on mount
+  // Load history and configuration on mount with Auth integration
   useEffect(() => {
-    // Generate/Load unique user ID for Firestore syncing
-    let uid = localStorage.getItem('thewriter_uid');
-    if (!uid) {
-      uid = 'user_' + Math.random().toString(36).substring(2, 11);
-      localStorage.setItem('thewriter_uid', uid);
-    }
-    setUserId(uid);
-
-    // Initial load from local storage
+    // Initial load of defaults from local storage
     const savedHistory = localStorage.getItem('thewriter_history');
     if (savedHistory) {
       try {
@@ -201,9 +217,25 @@ export default function App() {
     const savedMaxSpeed = localStorage.getItem('thewriter_max_word_speed');
     if (savedMaxSpeed !== null) setMaxWordSpeed(parseFloat(savedMaxSpeed));
 
-    // Try loading fresher data from Firestore
-    loadSettingsFromFirestore(uid);
-    loadHistoryFromFirestore(uid);
+    // Listen to Firebase Auth state changes
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+        setUserId(currentUser.uid);
+        loadSettingsFromFirestore(currentUser.uid);
+        loadHistoryFromFirestore(currentUser.uid);
+      } else {
+        setUser(null);
+        let uid = localStorage.getItem('thewriter_uid');
+        if (!uid) {
+          uid = 'user_' + Math.random().toString(36).substring(2, 11);
+          localStorage.setItem('thewriter_uid', uid);
+        }
+        setUserId(uid);
+        loadSettingsFromFirestore(uid);
+        loadHistoryFromFirestore(uid);
+      }
+    });
 
     // Speech Synthesis initialization
     if ('speechSynthesis' in window) {
@@ -226,6 +258,8 @@ export default function App() {
       getSpeechVoices();
       window.speechSynthesis.onvoiceschanged = getSpeechVoices;
     }
+
+    return () => unsubscribe();
   }, []);
 
   // Sync settings to localStorage and Firestore
@@ -709,6 +743,40 @@ export default function App() {
         <div className="brand-section">
           <Trophy className="brand-icon" size={28} />
           <h1 className="brand-title">L'Écrivain</h1>
+        </div>
+
+        {/* User Auth Section */}
+        <div className="auth-header-section">
+          {user ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+              {user.photoURL && (
+                <img 
+                  src={user.photoURL} 
+                  alt={user.displayName} 
+                  style={{ width: '30px', height: '30px', borderRadius: '50%', border: '2px solid var(--color-accent)' }} 
+                />
+              )}
+              <span className="user-name" style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+                {user.displayName}
+              </span>
+              <button 
+                onClick={handleSignOut} 
+                className="test-voice-btn" 
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+                title="Se déconnecter"
+              >
+                <LogOut size={14} /> <span className="logout-text">Déconnexion</span>
+              </button>
+            </div>
+          ) : (
+            <button 
+              onClick={handleSignInWithGoogle} 
+              className="test-voice-btn" 
+              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.85rem', fontSize: '0.85rem', borderColor: 'rgba(255,255,255,0.15)' }}
+            >
+              <LogIn size={15} /> Connexion Google
+            </button>
+          )}
         </div>
 
         {isPlaying && (

@@ -1,5 +1,7 @@
 // generate_vocab.js
+/* eslint-disable */
 import fs from 'fs';
+
 
 console.log('Generating French vocabulary dataset...');
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Trophy, 
   Target, 
@@ -6,20 +6,15 @@ import {
   Zap, 
   Settings, 
   Volume2, 
-  Play, 
-  Pause, 
-  RefreshCw, 
-  HelpCircle, 
-  CheckCircle, 
   AlertCircle,
   ArrowRight,
   Info,
   Calendar,
-  LogIn,
-  LogOut
+  LogOut,
+  X
 } from 'lucide-react';
 import { getWordsForLevel, totalWordsCount, totalPhrasesCount } from './words';
-import './App.css'; // kept for clean loading, but index.css does the heavy lifting
+import './App.css';
 import { db, auth, googleProvider } from './firebase';
 import { doc, getDoc, setDoc, collection, addDoc, getDocs, query, orderBy, limit } from 'firebase/firestore';
 import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
@@ -34,86 +29,148 @@ const shuffleArray = (array) => {
   return arr;
 };
 
+// Format seconds into MM:SS
+const formatTime = (seconds) => {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
+
 export default function App() {
-  // Game Setup & Modes
-  const [gameMode, setGameMode] = useState('dashboard'); // 'dashboard', 'elision', 'tense'
+  // 1. STATE INITIALIZATION (Using lazy initializers to avoid double render calls)
+  const [user, setUser] = useState(undefined); // undefined = loading, null = unauthenticated, object = authenticated
   const [userId, setUserId] = useState('');
-  const [user, setUser] = useState(null);
+
+  const [gameMode, setGameMode] = useState('dashboard'); // 'dashboard', 'play'
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  
-  // Game Stats
+  const [showGameOver, setShowGameOver] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [isWaveTransition, setIsWaveTransition] = useState(false);
+
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState(0);
-  const [level, setLevel] = useState(1);
+  const [level, setLevel] = useState(1); // level acts as the Wave number
   const [wordsAttempted, setWordsAttempted] = useState(0);
   const [wordsCorrect, setWordsCorrect] = useState(0);
-  
-  // Floating Items & Particles
-  const [floatingWords, setFloatingWords] = useState([]);
-  const [particles, setParticles] = useState([]);
-  
-  // Inputs
-  const [typedText, setTypedText] = useState('');
-  const [tenseInputs, setTenseInputs] = useState({ past: '', present: '', future: '' });
-  
-  // Typing Accuracy Tracking per word
-  const [errorsThisWord, setErrorsThisWord] = useState(0);
-  const [lastCheckedInput, setLastCheckedInput] = useState('');
-  const [inputState, setInputState] = useState('normal'); // 'normal', 'error', 'correct'
-  const [tenseInputStates, setTenseInputStates] = useState({ past: 'normal', present: 'normal', future: 'normal' });
 
-  // Notifications & Modals
-  const [notification, setNotification] = useState(null);
-  const [showGameOver, setShowGameOver] = useState(false);
+  const [badges, setBadges] = useState([]);
+  const [particles, setParticles] = useState([]);
+  const [typedText, setTypedText] = useState('');
+  const [inputState, setInputState] = useState('normal'); // 'normal', 'error', 'correct'
+  const [lastCheckedInput, setLastCheckedInput] = useState('');
+  const [errorsThisWord, setErrorsThisWord] = useState(0);
   const [reviewWords, setReviewWords] = useState([]);
-  const [history, setHistory] = useState([]);
   
-  // Sound & Speech Synthesis
+  const [history, setHistory] = useState(() => {
+    const savedHistory = localStorage.getItem('thewriter_history');
+    if (savedHistory) {
+      try {
+        return JSON.parse(savedHistory);
+      } catch (e) {
+        console.error('Failed to parse game history', e);
+      }
+    }
+    return [];
+  });
+
+  const [timer, setTimer] = useState(180);
+  const maxTime = 180;
+
   const [voices, setVoices] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState('');
-  const [speechRate, setSpeechRate] = useState(0.65); // Default slowed down for learning
-  const [speechPitch, setSpeechPitch] = useState(1.0);
-  const [ttsEngine, setTtsEngine] = useState('cloud'); // 'cloud' (Google Translate), 'openai' (Puter AI), 'local' (Browser Native)
-  const [minWordSpeed, setMinWordSpeed] = useState(0.8);
-  const [maxWordSpeed, setMaxWordSpeed] = useState(1.4);
   
-  // Refs
+  const [speechRate, setSpeechRate] = useState(() => {
+    const savedRate = localStorage.getItem('thewriter_speech_rate');
+    return savedRate ? parseFloat(savedRate) : 0.7;
+  });
+  
+  const [speechPitch, setSpeechPitch] = useState(() => {
+    const savedPitch = localStorage.getItem('thewriter_speech_pitch');
+    return savedPitch ? parseFloat(savedPitch) : 1.0;
+  });
+  
+  const [ttsEngine, setTtsEngine] = useState(() => {
+    const savedTtsEngine = localStorage.getItem('thewriter_tts_engine');
+    return savedTtsEngine || 'cloud';
+  });
+  
+  const [notification, setNotification] = useState(null);
+
+  // 2. REFS
   const inputRef = useRef(null);
-  const tenseRefs = {
-    past: useRef(null),
-    present: useRef(null),
-    future: useRef(null)
-  };
-  const wordIdRef = useRef(0);
   const notificationTimeoutRef = useRef(null);
-  
-  const floatingWordsRef = useRef([]);
-  const levelRef = useRef(1);
-  const gameModeRef = useRef('dashboard');
-  const passedWordsRef = useRef(new Set());
 
-  // Keep refs in sync to avoid stale closures in spawning intervals
-  useEffect(() => {
-    floatingWordsRef.current = floatingWords;
-  }, [floatingWords]);
+  // 3. HELPER FUNCTIONS
 
-  useEffect(() => {
-    levelRef.current = level;
-  }, [level]);
-
-  useEffect(() => {
-    gameModeRef.current = gameMode;
-  }, [gameMode]);
-
-  // Clear passed words tracker when level changes during play
-  useEffect(() => {
-    if (isPlaying) {
-      passedWordsRef.current.clear();
+  // Notification trigger
+  const triggerNotification = useCallback((message, type) => {
+    if (notificationTimeoutRef.current) {
+      clearTimeout(notificationTimeoutRef.current);
     }
-  }, [level, isPlaying]);
+    setNotification({ message, type });
+    notificationTimeoutRef.current = setTimeout(() => {
+      setNotification(null);
+    }, 3500);
+  }, []);
 
-  // Google Authentication Handlers
+  // TTS utilities
+  const speakLocalWord = useCallback((text, rate) => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'fr-FR';
+      const voice = voices.find(v => v.voiceURI === selectedVoice);
+      if (voice) utterance.voice = voice;
+      utterance.rate = rate;
+      utterance.pitch = speechPitch;
+      window.speechSynthesis.speak(utterance);
+    }
+  }, [voices, selectedVoice, speechPitch]);
+
+  const speakGoogleWord = useCallback((text, rate) => {
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=fr&client=tw-ob&q=${encodeURIComponent(text)}`;
+    const audio = new Audio(url);
+    audio.preservesPitch = true;
+    audio.mozPreservesPitch = true;
+    audio.webkitPreservesPitch = true;
+    audio.playbackRate = rate;
+    audio.play().catch(err => {
+      console.warn("Google Cloud TTS failed, falling back to local Speech engine", err);
+      speakLocalWord(text, rate);
+    });
+  }, [speakLocalWord]);
+
+  const speakWord = useCallback((text, slow = false) => {
+    const rate = slow ? speechRate * 0.8 : speechRate;
+    
+    if (ttsEngine === 'openai' && window.puter) {
+      window.puter.ai.txt2speech(text, { provider: 'openai', language: 'fr-FR' })
+        .then(audioObj => {
+          if (audioObj) {
+            audioObj.preservesPitch = true;
+            audioObj.mozPreservesPitch = true;
+            audioObj.webkitPreservesPitch = true;
+            audioObj.playbackRate = rate;
+            audioObj.play();
+          }
+        })
+        .catch(err => {
+          console.warn("OpenAI Puter TTS failed, falling back to Google Cloud", err);
+          speakGoogleWord(text, rate);
+        });
+    } else if (ttsEngine === 'cloud' || ttsEngine === 'openai') {
+      speakGoogleWord(text, rate);
+    } else {
+      speakLocalWord(text, rate);
+    }
+  }, [speechRate, ttsEngine, speakGoogleWord, speakLocalWord]);
+
+  const handleTestVoice = () => {
+    speakWord("Bonjour ! Bienvenue dans l'application l'Écrivain.");
+  };
+
+  // Auth operations
   const handleSignInWithGoogle = async () => {
     try {
       await signInWithPopup(auth, googleProvider);
@@ -133,7 +190,7 @@ export default function App() {
     }
   };
 
-  // Load settings from Firestore
+  // Firestore DB operations
   const loadSettingsFromFirestore = async (uid) => {
     try {
       const docRef = doc(db, 'users', uid, 'config', 'settings');
@@ -144,15 +201,12 @@ export default function App() {
         if (data.speechPitch !== undefined) setSpeechPitch(data.speechPitch);
         if (data.selectedVoice !== undefined) setSelectedVoice(data.selectedVoice);
         if (data.ttsEngine !== undefined) setTtsEngine(data.ttsEngine);
-        if (data.minWordSpeed !== undefined) setMinWordSpeed(data.minWordSpeed);
-        if (data.maxWordSpeed !== undefined) setMaxWordSpeed(data.maxWordSpeed);
       }
     } catch (e) {
       console.warn("Could not load settings from Firestore, using local defaults", e);
     }
   };
 
-  // Save settings to Firestore
   const saveSettingsToFirestore = async (uid, settingsUpdate) => {
     try {
       const docRef = doc(db, 'users', uid, 'config', 'settings');
@@ -162,7 +216,6 @@ export default function App() {
     }
   };
 
-  // Load history from Firestore
   const loadHistoryFromFirestore = async (uid) => {
     try {
       const colRef = collection(db, 'users', uid, 'history');
@@ -180,7 +233,6 @@ export default function App() {
     }
   };
 
-  // Save history item to Firestore
   const saveHistoryToFirestore = async (uid, session) => {
     try {
       const colRef = collection(db, 'users', uid, 'history');
@@ -193,76 +245,7 @@ export default function App() {
     }
   };
 
-  // Load history and configuration on mount with Auth integration
-  useEffect(() => {
-    // Initial load of defaults from local storage
-    const savedHistory = localStorage.getItem('thewriter_history');
-    if (savedHistory) {
-      try {
-        setHistory(JSON.parse(savedHistory));
-      } catch (e) {
-        console.error('Failed to parse game history', e);
-      }
-    }
-
-    const savedRate = localStorage.getItem('thewriter_speech_rate');
-    if (savedRate) setSpeechRate(parseFloat(savedRate));
-    const savedPitch = localStorage.getItem('thewriter_speech_pitch');
-    if (savedPitch) setSpeechPitch(parseFloat(savedPitch));
-    
-    const savedTtsEngine = localStorage.getItem('thewriter_tts_engine');
-    if (savedTtsEngine) setTtsEngine(savedTtsEngine);
-    const savedMinSpeed = localStorage.getItem('thewriter_min_word_speed');
-    if (savedMinSpeed !== null) setMinWordSpeed(parseFloat(savedMinSpeed));
-    const savedMaxSpeed = localStorage.getItem('thewriter_max_word_speed');
-    if (savedMaxSpeed !== null) setMaxWordSpeed(parseFloat(savedMaxSpeed));
-
-    // Listen to Firebase Auth state changes
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      if (currentUser) {
-        setUser(currentUser);
-        setUserId(currentUser.uid);
-        loadSettingsFromFirestore(currentUser.uid);
-        loadHistoryFromFirestore(currentUser.uid);
-      } else {
-        setUser(null);
-        let uid = localStorage.getItem('thewriter_uid');
-        if (!uid) {
-          uid = 'user_' + Math.random().toString(36).substring(2, 11);
-          localStorage.setItem('thewriter_uid', uid);
-        }
-        setUserId(uid);
-        loadSettingsFromFirestore(uid);
-        loadHistoryFromFirestore(uid);
-      }
-    });
-
-    // Speech Synthesis initialization
-    if ('speechSynthesis' in window) {
-      const getSpeechVoices = () => {
-        const availableVoices = window.speechSynthesis.getVoices();
-        setVoices(availableVoices);
-        
-        // Find default french voice
-        const savedVoice = localStorage.getItem('thewriter_selected_voice');
-        if (savedVoice) {
-          setSelectedVoice(savedVoice);
-        } else {
-          const defaultFr = availableVoices.find(v => v.lang.startsWith('fr'));
-          if (defaultFr) {
-            setSelectedVoice(defaultFr.voiceURI);
-          }
-        }
-      };
-
-      getSpeechVoices();
-      window.speechSynthesis.onvoiceschanged = getSpeechVoices;
-    }
-
-    return () => unsubscribe();
-  }, []);
-
-  // Sync settings to localStorage and Firestore
+  // Settings syncing handlers
   const handleRateChange = (rate) => {
     setSpeechRate(rate);
     localStorage.setItem('thewriter_speech_rate', rate);
@@ -287,276 +270,20 @@ export default function App() {
     if (userId) saveSettingsToFirestore(userId, { ttsEngine: engine });
   };
 
-  const handleMinWordSpeedChange = (val) => {
-    setMinWordSpeed(val);
-    localStorage.setItem('thewriter_min_word_speed', val);
-    let updatedMax = maxWordSpeed;
-    if (val > maxWordSpeed) {
-      updatedMax = val;
-      setMaxWordSpeed(val);
-      localStorage.setItem('thewriter_max_word_speed', val);
-    }
-    if (userId) saveSettingsToFirestore(userId, { minWordSpeed: val, maxWordSpeed: updatedMax });
-  };
-
-  const handleMaxWordSpeedChange = (val) => {
-    setMaxWordSpeed(val);
-    localStorage.setItem('thewriter_max_word_speed', val);
-    let updatedMin = minWordSpeed;
-    if (val < minWordSpeed) {
-      updatedMin = val;
-      setMinWordSpeed(val);
-      localStorage.setItem('thewriter_min_word_speed', val);
-    }
-    if (userId) saveSettingsToFirestore(userId, { maxWordSpeed: val, minWordSpeed: updatedMin });
-  };
-
-  // Text-To-Speech Pronunciation with Cloud voice option
-  const speakWord = (text, slow = false) => {
-    const rate = slow ? speechRate * 0.8 : speechRate;
-    
-    if (ttsEngine === 'openai' && window.puter) {
-      // Use OpenAI high-fidelity neural voice via Puter.js
-      window.puter.ai.txt2speech(text, { provider: 'openai', language: 'fr-FR' })
-        .then(audioObj => {
-          if (audioObj) {
-            audioObj.preservesPitch = true;
-            audioObj.mozPreservesPitch = true;
-            audioObj.webkitPreservesPitch = true;
-            audioObj.playbackRate = rate;
-            audioObj.play();
-          }
-        })
-        .catch(err => {
-          console.warn("OpenAI Puter TTS failed, falling back to Google Cloud", err);
-          speakGoogleWord(text, rate);
-        });
-    } else if (ttsEngine === 'cloud' || ttsEngine === 'openai') {
-      speakGoogleWord(text, rate);
-    } else {
-      speakLocalWord(text, rate);
-    }
-  };
-
-  const speakGoogleWord = (text, rate) => {
-    // Google Translate TTS cloud voice for perfect French articulation
-    const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=fr&client=tw-ob&q=${encodeURIComponent(text)}`;
-    const audio = new Audio(url);
-    
-    // CRITICAL: Preserve pitch so it sounds natural at slower speeds!
-    audio.preservesPitch = true;
-    audio.mozPreservesPitch = true;
-    audio.webkitPreservesPitch = true;
-    audio.playbackRate = rate;
-    
-    audio.play().catch(err => {
-      console.warn("Google Cloud TTS failed, falling back to local speech engine", err);
-      speakLocalWord(text, rate);
-    });
-  };
-
-  const speakLocalWord = (text, rate) => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'fr-FR';
-      
-      const voice = voices.find(v => v.voiceURI === selectedVoice);
-      if (voice) {
-        utterance.voice = voice;
-      }
-      
-      utterance.rate = rate;
-      utterance.pitch = speechPitch;
-      
-      window.speechSynthesis.speak(utterance);
-    }
-  };
-
-  // Audio test trigger
-  const handleTestVoice = () => {
-    speakWord("Bonjour ! Bienvenue dans l'application l'Écrivain.");
-  };
-
-  // Dynamic Notification Helper
-  const triggerNotification = (message, type) => {
-    if (notificationTimeoutRef.current) {
-      clearTimeout(notificationTimeoutRef.current);
-    }
-    setNotification({ message, type });
-    notificationTimeoutRef.current = setTimeout(() => {
-      setNotification(null);
-    }, 4000);
-  };
-
-  // Core Word Generator
-  const spawnWord = () => {
-    const currentLevel = levelRef.current;
-    const vocab = getWordsForLevel(currentLevel);
-    if (!vocab || vocab.length === 0) return;
-
-    // Filter out words that have already been passed
-    let available = vocab.filter(w => !passedWordsRef.current.has(w.text));
-
-    // If all words have been passed, reset the passed words set
-    if (available.length === 0) {
-      passedWordsRef.current.clear();
-      available = vocab;
-    }
-
-    // Attempt to avoid spawning a word that is currently floating on screen
-    const currentFloatingTexts = new Set(floatingWordsRef.current.map(w => w.text));
-    const nonFloatingAvailable = available.filter(w => !currentFloatingTexts.has(w.text));
-    if (nonFloatingAvailable.length > 0) {
-      available = nonFloatingAvailable;
-    }
-
-    // Select a random word from the available list
-    const randomIndex = Math.floor(Math.random() * available.length);
-    const picked = available[randomIndex];
-    if (!picked) return;
-
-    // Record that this word has been passed
-    passedWordsRef.current.add(picked.text);
-
-    // Calculate speed based on level and min/max speed settings
-    const levelFactor = 1 + currentLevel * 0.05;
-    const baseMin = 0.05 * minWordSpeed * levelFactor;
-    const baseMax = 0.15 * maxWordSpeed * levelFactor;
-    
-    // Ensure min < max
-    const speedRangeMin = baseMin;
-    const speedRangeMax = Math.max(baseMin + 0.01, baseMax);
-    const speed = speedRangeMin + Math.random() * (speedRangeMax - speedRangeMin);
-
-    wordIdRef.current += 1;
-    const newWord = {
-      id: wordIdRef.current,
-      text: picked.text,
-      translation: picked.translation,
-      tense: picked.tense || 'any', // default to any for general words
-      x: 95, // starts at the right edge
-      y: Math.max(15, Math.min(80, 15 + Math.random() * 65)), // random vertical position
-      speed: speed,
-      errors: 0
-    };
-
-    setFloatingWords(prev => [...prev, newWord]);
-  };
-
-  // Spawning logic interval
-  useEffect(() => {
-    if (!isPlaying || isPaused || showGameOver) return;
-
-    let lastSpawnTime = Date.now();
-    
-    // Check every 500ms if we should spawn another word
-    const interval = setInterval(() => {
-      const maxWords = Math.min(6, 3 + Math.floor(level / 2));
-      const currentFloating = floatingWordsRef.current;
-      
-      const spawnIntervalTime = Math.max(2000, 5000 - level * 400);
-      const timeSinceLastSpawn = Date.now() - lastSpawnTime;
-
-      // Spawn if board has 0 words, or if we have fewer than maxWords and the interval has elapsed
-      if (currentFloating.length === 0 || (currentFloating.length < maxWords && timeSinceLastSpawn >= spawnIntervalTime)) {
-        spawnWord();
-        lastSpawnTime = Date.now();
-      }
-    }, 500);
-
-    return () => clearInterval(interval);
-  }, [isPlaying, isPaused, showGameOver, level]);
-
-  // Coordinate updates / Physics loop (requestAnimationFrame)
-  useEffect(() => {
-    if (!isPlaying || isPaused || showGameOver) return;
-    
-    let lastTime = performance.now();
-    let animationFrameId;
-    
-    const gameTick = (time) => {
-      const delta = (time - lastTime) / 1000;
-      lastTime = time;
-      
-      setFloatingWords(prev => {
-        let hasCrashed = false;
-        let crashedWord = null;
-        
-        // Update position of words
-        const updated = prev.map(w => {
-          // Normalize update rate to 60fps
-          const speedFactor = delta * 60;
-          return {
-            ...w,
-            x: w.x - (w.speed * speedFactor)
-          };
-        }).filter(w => {
-          if (w.x < -10) {
-            hasCrashed = true;
-            crashedWord = w;
-            return false; // remove crashed word
-          }
-          return true;
-        });
-
-        if (hasCrashed && crashedWord) {
-          // Trigger crash callbacks asynchronously
-          setTimeout(() => {
-            handleWordCrash(crashedWord);
-          }, 0);
-        }
-
-        return updated;
-      });
-
-      animationFrameId = requestAnimationFrame(gameTick);
-    };
-
-    animationFrameId = requestAnimationFrame(gameTick);
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [isPlaying, isPaused, showGameOver, level]);
-
-  // Handle word crash (reached left edge)
-  const handleWordCrash = (word) => {
-    setStreak(0);
-    setScore(prev => Math.max(0, prev - 30));
-    setWordsAttempted(prev => prev + 1);
-    
-    // Add to review list
-    setReviewWords(prev => {
-      if (prev.some(rw => rw.text === word.text)) return prev;
-      return [...prev, word];
-    });
-
-    triggerNotification(`Manqué ! "${word.text}" = "${word.translation}"`, 'missed');
-    
-    // Speak word slowly for auditory correction
-    speakWord(word.text, true);
-
-    // If score or progress reaches threshold, check game over parameters
-    // In this practice mode, game keeps going but streak resets.
-    // However, if we accumulate more than 8 words in review, let's offer to pause/game over to review
-    if (reviewWords.length >= 7) {
-      endGame();
-    }
-  };
-
-  // Spark / Particle Burst Generator
+  // Particle Explosions
   const createExplosion = (x, y, colorClass) => {
-    let particleColor = '#8b5cf6'; // default violet
-    if (colorClass === 'past') particleColor = '#ec4899';
-    else if (colorClass === 'present') particleColor = '#10b981';
-    else if (colorClass === 'future') particleColor = '#06b6d4';
+    let particleColor = '#8b5cf6'; // Violet
+    if (colorClass === 'past') particleColor = '#ec4899'; // Pink
+    else if (colorClass === 'present') particleColor = '#10b981'; // Green
+    else if (colorClass === 'future') particleColor = '#06b6d4'; // Cyan
 
-    const newParticles = Array.from({ length: 15 }).map((_, i) => {
-      const angle = (i / 15) * Math.PI * 2 + (Math.random() * 0.5);
-      const speed = 2 + Math.random() * 6;
+    const newParticles = Array.from({ length: 16 }).map((_, i) => {
+      const angle = (i / 16) * Math.PI * 2 + (Math.random() * 0.4);
+      const speed = 3 + Math.random() * 8;
       return {
         id: Math.random(),
-        x: `${x}%`,
-        y: `${y}%`,
+        x: `${x}px`,
+        y: `${y}px`,
         dx: `${Math.cos(angle) * speed * 25}px`,
         dy: `${Math.sin(angle) * speed * 25}px`,
         size: `${3 + Math.random() * 6}px`,
@@ -565,26 +292,158 @@ export default function App() {
     });
 
     setParticles(prev => [...prev, ...newParticles]);
-    
-    // Cleanup particles
     setTimeout(() => {
       setParticles(prev => prev.filter(p => !newParticles.some(np => np.id === p.id)));
-    }, 6000);
+    }, 850);
   };
 
-  // Keypress Accuracy Validator & Handler (Unified Input)
+  // Selection of badges for Level
+  const selectBadgesForLevel = (lvl) => {
+    const pool = getWordsForLevel(lvl);
+    if (!pool || pool.length === 0) return [];
+    
+    const count = Math.min(pool.length, 50 + lvl * 15);
+    const shuffled = shuffleArray(pool);
+    
+    return shuffled.slice(0, count).map((w, index) => ({
+      id: index,
+      text: w.text,
+      translation: w.translation,
+      tense: w.tense || 'any',
+      isDestroyed: false
+    }));
+  };
+
+  // Game lifecycle controls
+  const endGame = useCallback(() => {
+    setIsPlaying(false);
+    setShowGameOver(true);
+
+    const accuracy = wordsAttempted > 0 ? Math.round((wordsCorrect / wordsAttempted) * 100) : 100;
+    const unreached = badges.filter(b => !b.isDestroyed);
+    setReviewWords(unreached);
+
+    const session = {
+      date: new Date().toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      }),
+      score: score,
+      accuracy: accuracy,
+      mode: `Vague ${level}`
+    };
+
+    setHistory(prev => {
+      const updated = [session, ...prev].slice(0, 10);
+      localStorage.setItem('thewriter_history', JSON.stringify(updated));
+      return updated;
+    });
+
+    if (userId) {
+      saveHistoryToFirestore(userId, session);
+    }
+  }, [badges, score, level, wordsAttempted, wordsCorrect, userId]);
+
+  const handleWaveCleared = useCallback(() => {
+    setIsWaveTransition(true);
+    triggerNotification(`Vague ${level} réussie ! 🎉 Vague suivante en préparation...`, 'success');
+    speakWord("Excellent ! Vague terminée.");
+    
+    setTimeout(() => {
+      setLevel(prev => {
+        const nextLevel = prev + 1;
+        const newBadges = selectBadgesForLevel(nextLevel);
+        setBadges(newBadges);
+        setTimer(180);
+        setIsWaveTransition(false);
+        return nextLevel;
+      });
+    }, 2000);
+  }, [level, triggerNotification, speakWord]);
+
+  const startGame = () => {
+    if (!auth.currentUser) {
+      triggerNotification("Veuillez d'abord vous connecter !", "error");
+      return;
+    }
+    setGameMode('play');
+    setIsPlaying(true);
+    setIsPaused(false);
+    setShowGameOver(false);
+    setScore(0);
+    setStreak(0);
+    setLevel(1);
+    setWordsAttempted(0);
+    setWordsCorrect(0);
+    setReviewWords([]);
+    setTypedText('');
+    setErrorsThisWord(0);
+
+    const initialBadges = selectBadgesForLevel(1);
+    setBadges(initialBadges);
+    setTimer(180);
+
+    // Focus input field
+    setTimeout(() => {
+      if (inputRef.current) inputRef.current.focus();
+    }, 150);
+  };
+
+  const handleBadgeSolved = (badge) => {
+    speakWord(badge.text);
+
+    // Get badge position on screen
+    const element = document.getElementById(`badge-${badge.id}`);
+    if (element) {
+      const rect = element.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      createExplosion(x, y, badge.tense);
+    }
+
+    // Mark badge destroyed
+    setBadges(prev => prev.map(b => b.id === badge.id ? { ...b, isDestroyed: true } : b));
+
+    // Stats updates
+    setWordsCorrect(prev => prev + 1);
+    setWordsAttempted(prev => prev + 1);
+
+    const newStreak = streak + 1;
+    setStreak(newStreak);
+
+    // Score calculations
+    const baseVal = Math.max(20, 100 - (errorsThisWord * 15));
+    const streakBonus = newStreak * 10;
+    const scoreGain = baseVal + streakBonus;
+    setScore(prev => prev + scoreGain);
+    setErrorsThisWord(0);
+
+    // Remove badge completely from state list after pop animation delay
+    setTimeout(() => {
+      setBadges(prev => prev.filter(b => b.id !== badge.id));
+    }, 300);
+  };
+
+  const handleBadgeClick = (badge) => {
+    speakWord(badge.text);
+    triggerNotification(`"${badge.text}" = "${badge.translation}"`, 'success');
+  };
+
+  // Typing Input handler
   const handleInputChange = (e) => {
     const text = e.target.value;
     setTypedText(text);
-    
+
     if (text === '') {
       setInputState('normal');
       return;
     }
 
-    // Check prefix match against all active words
-    const isPrefixOfAny = floatingWords.some(w => 
-      w.text.toLowerCase().startsWith(text.toLowerCase())
+    // Prefix validation against active badges
+    const isPrefixOfAny = badges.some(b => 
+      !b.isDestroyed && b.text.toLowerCase().startsWith(text.toLowerCase())
     );
 
     if (!isPrefixOfAny) {
@@ -598,222 +457,212 @@ export default function App() {
 
     setLastCheckedInput(text);
 
-    // Check exact match
-    const matchingWord = floatingWords.find(w => w.text.toLowerCase() === text.trim().toLowerCase());
-    
-    if (matchingWord) {
-      // Find current column of the word based on X coordinate
-      // Boundaries: Past (0 - 33.3), Present (33.3 - 66.6), Future (66.6 - 100)
-      const currentWordColumn = matchingWord.x < 33.3 ? 'past' : (matchingWord.x < 66.6 ? 'present' : 'future');
-      
-      const isMatchable = matchingWord.tense === 'any' || currentWordColumn === matchingWord.tense;
-      
-      if (isMatchable) {
-        handleWordSolved(matchingWord, matchingWord.tense === 'any' ? 'any' : matchingWord.tense);
-        setTypedText('');
-        setInputState('correct');
-        setTimeout(() => setInputState('normal'), 200);
-      } else {
-        // Tense does not match current physical column
-        setInputState('error');
-        setErrorsThisWord(prev => prev + 1);
-        
-        let tenseFr = matchingWord.tense === 'past' ? 'PASSÉ (gauche)' : (matchingWord.tense === 'present' ? 'PRÉSENT (milieu)' : 'FUTUR (droite)');
-        triggerNotification(`Mauvaise zone ! "${matchingWord.text}" est au ${tenseFr}`, 'missed');
-      }
+    // Match validation
+    const matchingBadge = badges.find(b => 
+      !b.isDestroyed && b.text.toLowerCase() === text.trim().toLowerCase()
+    );
+
+    if (matchingBadge) {
+      handleBadgeSolved(matchingBadge);
+      setTypedText('');
+      setInputState('correct');
+      setTimeout(() => setInputState('normal'), 200);
     }
   };
 
-  // Word Solved successfully
-  const handleWordSolved = (word, highlightColor) => {
-    speakWord(word.text);
-    createExplosion(word.x, word.y, highlightColor);
-    
-    // Remove the word
-    setFloatingWords(prev => prev.filter(w => w.id !== word.id));
-    
-    // Calculate stats
-    setWordsCorrect(prev => prev + 1);
-    setWordsAttempted(prev => prev + 1);
-    
-    const newStreak = streak + 1;
-    setStreak(newStreak);
-
-    // Score calculations
-    // Base score: 100
-    // Error deduction: -15 per error (minimum 20 points)
-    // Speed bonus: up to 150 points depending on how fast they typed (closer to x = 95 is faster)
-    const baseVal = Math.max(20, 100 - (errorsThisWord * 15));
-    const speedBonus = Math.round(word.x * 1.5);
-    const scoreGain = Math.round((baseVal + speedBonus) * (1 + newStreak * 0.05));
-    
-    setScore(prev => prev + scoreGain);
-    setErrorsThisWord(0);
-
-    // Level progression
-    // Trigger level up every 5 solved words in streak, or 10 total correct words
-    const shouldLevelUp = newStreak > 0 && newStreak % 5 === 0;
-    if (shouldLevelUp) {
-      setLevel(prev => {
-        const nextLvl = prev + 1;
-        triggerNotification(`NIVEAU SUPÉRIEUR ! Vous êtes au niveau ${nextLvl} 🎉`, 'level-up');
-        return nextLvl;
-      });
-    }
-  };
-
-  // Start the Game
-  const startGame = () => {
-    if (!auth.currentUser) {
-      triggerNotification("Veuillez d'abord vous connecter avec Google !", "error");
-      return;
-    }
-    setGameMode('play');
-    setIsPlaying(true);
-    setIsPaused(false);
-    setShowGameOver(false);
-    setScore(0);
-    setStreak(0);
-    setLevel(1);
-    setWordsAttempted(0);
-    setWordsCorrect(0);
-    setFloatingWords([]);
-    setReviewWords([]);
-    setTypedText('');
-    setErrorsThisWord(0);
-    
-    // Clear passed words tracker
-    passedWordsRef.current.clear();
-    
-    // Focus typing box after short delay to let DOM render
-    setTimeout(() => {
-      if (inputRef.current) {
-        inputRef.current.focus();
-      }
-    }, 100);
-
-    // Spawn multiple words at startup to populate the board immediately
-    setTimeout(() => spawnWord(), 200);
-    setTimeout(() => spawnWord(), 800);
-    setTimeout(() => spawnWord(), 1400);
-  };
-
-  // End Game
-  const endGame = () => {
-    setIsPlaying(false);
-    setShowGameOver(true);
-    
-    // Save to history
-    const session = {
-      date: new Date().toLocaleDateString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      }),
-      score: score,
-      accuracy: wordsAttempted > 0 ? Math.round((wordsCorrect / wordsAttempted) * 100) : 100,
-      mode: 'Pratique Unifiée'
-    };
-
-    const newHistory = [session, ...history].slice(0, 10);
-    setHistory(newHistory);
-    localStorage.setItem('thewriter_history', JSON.stringify(newHistory));
-
-    if (userId) {
-      saveHistoryToFirestore(userId, session);
-    }
-  };
-
-  // Accent clicking helper
+  // Helper characters
   const handleAccentClick = (char) => {
     const text = typedText + char;
     setTypedText(text);
     if (inputRef.current) inputRef.current.focus();
   };
 
+  // 4. EFFECTS
+
+  // Auth and voice initializer
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+        setUserId(currentUser.uid);
+        loadSettingsFromFirestore(currentUser.uid);
+        loadHistoryFromFirestore(currentUser.uid);
+      } else {
+        setUser(null);
+        setUserId('');
+      }
+    });
+
+    if ('speechSynthesis' in window) {
+      const getSpeechVoices = () => {
+        const availableVoices = window.speechSynthesis.getVoices();
+        setVoices(availableVoices);
+        const savedVoice = localStorage.getItem('thewriter_selected_voice');
+        if (savedVoice) {
+          setSelectedVoice(savedVoice);
+        } else {
+          const defaultFr = availableVoices.find(v => v.lang.startsWith('fr'));
+          if (defaultFr) {
+            setSelectedVoice(defaultFr.voiceURI);
+          }
+        }
+      };
+
+      getSpeechVoices();
+      window.speechSynthesis.onvoiceschanged = getSpeechVoices;
+    }
+
+    return () => unsubscribe();
+  }, []);
+
+  // Timer interval loop
+  useEffect(() => {
+    let interval;
+    if (isPlaying && !isPaused && !showGameOver && !isWaveTransition) {
+      interval = setInterval(() => {
+        setTimer(prev => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            endGame();
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isPlaying, isPaused, showGameOver, isWaveTransition, endGame]);
+
+  // Check if wave completed (defrred by setTimeout to avoid synchronous setState inside render warnings)
+  useEffect(() => {
+    if (isPlaying && badges.length > 0 && badges.every(b => b.isDestroyed) && !isWaveTransition) {
+      const timerId = setTimeout(() => {
+        handleWaveCleared();
+      }, 0);
+      return () => clearTimeout(timerId);
+    }
+  }, [badges, isPlaying, isWaveTransition, handleWaveCleared]);
+
+  // 5. RENDER BLOCKS
+
+  // A. LOADING STATE
+  if (user === undefined) {
+    return (
+      <div className="login-page">
+        <div className="loading-spinner-container">
+          <div className="loading-spinner"></div>
+          <p className="loading-text">Chargement de l'Écrivain...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // B. UNAUTHENTICATED LOGIN PAGE (FRAME AND BUTTON ONLY)
+  if (user === null) {
+    return (
+      <div className="login-page">
+        <div className="login-card">
+          <div className="login-logo">✍️</div>
+          <h1 className="login-title">L'Écrivain</h1>
+          <p className="login-subtitle">
+            Détruisez les badges de conjugaison et d'élisions en écrivant correctement leur orthographe française.
+          </p>
+          <button className="login-btn" onClick={handleSignInWithGoogle}>
+            <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" style={{ marginRight: '8px' }}>
+              <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z" fill="#4285F4"/>
+              <path d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="#34A853"/>
+              <path d="M3.964 10.707A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.707V4.961H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.039l3.007-2.332z" fill="#FBBC05"/>
+              <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.961L3.964 7.293C4.672 5.163 6.656 3.58 9 3.58z" fill="#EA4335"/>
+            </svg>
+            Se connecter avec Google
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // C. AUTHENTICATED WORKSPACE
   return (
     <div className="app-container">
-      {/* Dynamic Notifications */}
+      {/* Top level particle overlay */}
+      <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 9999 }}>
+        {particles.map(p => (
+          <div 
+            key={p.id} 
+            className="particle"
+            style={{
+              left: p.x,
+              top: p.y,
+              width: p.size,
+              height: p.size,
+              backgroundColor: p.color,
+              '--dx': p.dx,
+              '--dy': p.dy
+            }}
+          />
+        ))}
+      </div>
+
+      {/* Notifications */}
       {notification && (
         <div className={`game-notification ${notification.type}`}>
-          {notification.type === 'missed' ? <AlertCircle size={20} /> : <Zap size={20} />}
+          <AlertCircle size={20} />
           <span>{notification.message}</span>
         </div>
       )}
 
-      {/* Header section */}
+      {/* Header */}
       <header className="app-header glass-panel">
         <div className="brand-section">
           <Trophy className="brand-icon" size={28} />
           <h1 className="brand-title">L'Écrivain</h1>
         </div>
 
-        {/* User Auth Section */}
         <div className="auth-header-section">
-          {user ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-              {user.photoURL && (
-                <img 
-                  src={user.photoURL} 
-                  alt={user.displayName} 
-                  style={{ width: '30px', height: '30px', borderRadius: '50%', border: '2px solid var(--color-accent)' }} 
-                />
-              )}
-              <span className="user-name" style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 500 }}>
-                {user.displayName}
-              </span>
-              <button 
-                onClick={handleSignOut} 
-                className="test-voice-btn" 
-                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
-                title="Se déconnecter"
-              >
-                <LogOut size={14} /> <span className="logout-text">Déconnexion</span>
-              </button>
-            </div>
-          ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            {user.photoURL && (
+              <img 
+                src={user.photoURL} 
+                alt={user.displayName} 
+                style={{ width: '30px', height: '30px', borderRadius: '50%', border: '2px solid var(--color-accent)' }} 
+              />
+            )}
+            <span className="user-name" style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+              {user.displayName}
+            </span>
             <button 
-              onClick={handleSignInWithGoogle} 
-              className="test-voice-btn" 
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.85rem', fontSize: '0.85rem', borderColor: 'rgba(255,255,255,0.15)' }}
+              onClick={() => setShowSettings(true)} 
+              className="test-voice-btn"
+              title="Paramètres vocaux"
+              style={{ padding: '0.35rem 0.5rem' }}
             >
-              <LogIn size={15} /> Connexion Google
+              <Settings size={16} />
             </button>
-          )}
+            <button 
+              onClick={handleSignOut} 
+              className="test-voice-btn" 
+              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+              title="Se déconnecter"
+            >
+              <LogOut size={14} /> <span className="logout-text">Déconnexion</span>
+            </button>
+          </div>
         </div>
 
         {isPlaying && (
           <div className="header-controls">
-            
-            <button 
-              className="test-voice-btn"
-              onClick={() => setIsPaused(prev => !prev)}
-              title="Pause/Reprendre"
-            >
-              {isPaused ? <Play size={18} /> : <Pause size={18} />}
-            </button>
-            
-            <button 
-              className="test-voice-btn"
-              onClick={() => { if (confirm("Recommencer la partie ?")) startGame(); }}
-              title="Recommencer"
-            >
-              <RefreshCw size={18} />
-            </button>
-
             <button 
               className="test-voice-btn" 
               onClick={endGame}
               style={{ borderColor: 'var(--color-error)', color: 'var(--color-error)' }}
             >
-              Quitter
+              Abandonner
             </button>
           </div>
         )}
       </header>
 
-      {/* Game Stats bar (when playing) */}
+      {/* Stats bar */}
       {isPlaying && (
         <section className="stats-bar">
           <div className="stat-card glass-panel">
@@ -841,8 +690,8 @@ export default function App() {
               <Flame size={20} />
             </div>
             <div className="stat-info">
-              <span className="stat-label">Série active</span>
-              <span className="stat-value">{streak}</span>
+              <span className="stat-label">Série Active</span>
+              <span className="stat-value">{streak}🔥</span>
             </div>
           </div>
           <div className="stat-card glass-panel">
@@ -850,27 +699,25 @@ export default function App() {
               <Zap size={20} />
             </div>
             <div className="stat-info">
-              <span className="stat-label">Niveau</span>
+              <span className="stat-label">Vague / Niveau</span>
               <span className="stat-value">{level}</span>
             </div>
           </div>
         </section>
       )}
 
-      {/* Main workspace */}
+      {/* Main Content Area */}
       <main style={{ display: 'flex', flexGrow: 1, flexDirection: 'column' }}>
         
-        {/* DASHBOARD (NOT PLAYING) */}
+        {/* A. DASHBOARD */}
         {gameMode === 'dashboard' && !showGameOver && (
           <div className="dashboard-grid">
             
-            {/* Left side: welcome and start */}
+            {/* Welcome info */}
             <div className="welcome-panel glass-panel">
-              <h2 className="welcome-title">Entraînez votre français par l'écriture</h2>
+              <h2 className="welcome-title">Détruisez les Badges par l'Écriture</h2>
               <p className="welcome-desc">
-                Un jeu de dactylographie rythmé pour perfectionner l'écriture des élisions complexes 
-                (comme <em>l'amour</em>, <em>quelqu'un</em>, <em>je n'ai rien</em>) et maîtriser la conjugaison 
-                des verbes irréguliers au passé, présent et futur.
+                Des centaines de badges s'affichent sur l'écran. Saisissez chaque mot ou verbe français pour le faire exploser. Progressez et surmontez les vagues de conjugaison et d'élisions !
               </p>
               
               <div style={{
@@ -882,10 +729,9 @@ export default function App() {
                 padding: '0.6rem 1rem',
                 borderRadius: '8px',
                 border: '1px solid var(--border-glass)',
-                marginTop: '0.25rem',
                 width: 'fit-content'
               }}>
-                <span>📊 <strong>Base de données :</strong></span>
+                <span>📊 <strong>Base Active :</strong></span>
                 <span>{totalWordsCount} mots</span>
                 <span>•</span>
                 <span>{totalPhrasesCount} phrases</span>
@@ -899,166 +745,32 @@ export default function App() {
                 border: '1px solid rgba(139, 92, 246, 0.1)',
                 padding: '1.25rem',
                 borderRadius: '12px',
-                margin: '1.5rem 0',
-                width: '100%',
-                textAlign: 'left'
+                margin: '1rem 0',
+                width: '100%'
               }}>
-                <strong style={{ color: 'var(--color-accent)', display: 'block', marginBottom: '0.5rem' }}>💡 Règle du jeu unifié :</strong>
+                <strong style={{ color: 'var(--color-accent)', display: 'block', marginBottom: '0.5rem' }}>💡 Types de badges à détruire :</strong>
                 <ul style={{ paddingLeft: '1.2rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  <li>Les <strong>mots ordinaires</strong> (élisions) flottent avec un halo violet et peuvent être saisis <strong>à tout moment</strong>.</li>
-                  <li>Les <strong>verbes conjugués</strong> doivent être saisis uniquement lorsqu'ils traversent leur zone correspondante : 🩷 <strong>Passé</strong> (gauche), 💚 <strong>Présent</strong> (milieu), ou 🩵 <strong>Futur</strong> (droite) !</li>
+                  <li><span style={{ color: 'var(--color-accent)', fontWeight: 'bold' }}>💜 Élisions :</span> Mots avec apostrophes (comme <em>l'amour</em>, <em>qu'il</em>)</li>
+                  <li><span style={{ color: 'var(--color-past)', fontWeight: 'bold' }}>🩷 Passé :</span> Verbes conjugués au passé (comme <em>j'ai chanté</em>)</li>
+                  <li><span style={{ color: 'var(--color-present)', fontWeight: 'bold' }}>💚 Présent :</span> Verbes au présent (comme <em>je chante</em>)</li>
+                  <li><span style={{ color: 'var(--color-future)', fontWeight: 'bold' }}>🩵 Futur :</span> Verbes conjugués au futur (comme <em>je chanterai</em>)</li>
                 </ul>
               </div>
 
-              {user ? (
-                <button className="start-btn" onClick={startGame}>
-                  Démarrer la partie <ArrowRight size={18} />
-                </button>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem', width: '100%' }}>
-                  <button 
-                    className="start-btn" 
-                    onClick={handleSignInWithGoogle}
-                    style={{ background: 'linear-gradient(135deg, #ea4335 0%, #4285f4 100%)', boxShadow: '0 4px 15px rgba(234, 67, 53, 0.2)' }}
-                  >
-                    <LogIn size={18} /> Connectez-vous avec Google pour jouer
-                  </button>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--color-error)', display: 'flex', alignItems: 'center', gap: '0.3rem', fontWeight: 500 }}>
-                    <AlertCircle size={14} /> La connexion est requise pour démarrer la partie.
-                  </span>
-                </div>
-              )}
+              <button className="start-btn" onClick={startGame}>
+                Lancer l'entraînement <ArrowRight size={18} />
+              </button>
             </div>
 
-            {/* Right side: settings & history */}
+            {/* History logs */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-              
-              {/* Sound config */}
-              <div className="config-panel glass-panel">
-                <h3 className="config-title">
-                  <Volume2 size={20} /> Configuration Vocale
-                </h3>
-
-                <div className="config-group">
-                  <label className="config-label">Sélection de la voix</label>
-                  <select 
-                    className="config-select" 
-                    value={ttsEngine} 
-                    onChange={(e) => handleTtsEngineChange(e.target.value)}
-                  >
-                    <option value="cloud">🌟 Google Cloud (Haute qualité, Internet)</option>
-                    <option value="openai">🔥 OpenAI Neural (Premium, Internet)</option>
-                    <option value="local">🤖 Système Offline (Standard/Robotique)</option>
-                  </select>
-                </div>
-                
-                {ttsEngine === 'local' && (
-                  <>
-                    <div className="config-group">
-                      <label className="config-label">Voix locale du système</label>
-                      <select 
-                         className="config-select" 
-                         value={selectedVoice} 
-                         onChange={(e) => handleVoiceChange(e.target.value)}
-                      >
-                        {voices.filter(v => v.lang.startsWith('fr')).length === 0 ? (
-                          <option value="">Aucune voix locale française trouvée</option>
-                        ) : null}
-                        {voices.map(voice => (
-                          <option key={voice.voiceURI} value={voice.voiceURI}>
-                            {voice.name} ({voice.lang})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-        
-                    <div className="config-group">
-                      <label className="config-label">
-                        <span>Hauteur de voix (Pitch)</span>
-                        <span>{speechPitch}x</span>
-                      </label>
-                      <input 
-                        type="range" 
-                        min="0.6" 
-                        max="1.4" 
-                        step="0.1" 
-                        className="config-slider"
-                        value={speechPitch}
-                        onChange={(e) => handlePitchChange(parseFloat(e.target.value))}
-                      />
-                    </div>
-                  </>
-                )}
-
-                <div className="config-group" style={{ marginTop: '0.25rem' }}>
-                  <label className="config-label">
-                    <span>Vitesse de lecture de la voix</span>
-                    <span>{speechRate}x</span>
-                  </label>
-                  <input 
-                    type="range" 
-                    min="0.3" 
-                    max="1.2" 
-                    step="0.05" 
-                    className="config-slider"
-                    value={speechRate}
-                    onChange={(e) => handleRateChange(parseFloat(e.target.value))}
-                  />
-                </div>
-
-                <button className="test-voice-btn" onClick={handleTestVoice}>
-                  <Volume2 size={16} /> Tester la voix
-                </button>
-              </div>
-
-              {/* Game Play Speed config */}
-              <div className="config-panel glass-panel">
-                <h3 className="config-title">
-                  <Settings size={18} /> Configuration du Jeu
-                </h3>
-                <div className="config-group">
-                  <label className="config-label">
-                    <span>Vitesse minimale des mots</span>
-                    <span>{minWordSpeed}x</span>
-                  </label>
-                  <input 
-                    type="range" 
-                    min="0.3" 
-                    max="2.0" 
-                    step="0.1" 
-                    className="config-slider"
-                    value={minWordSpeed}
-                    onChange={(e) => handleMinWordSpeedChange(parseFloat(e.target.value))}
-                  />
-                </div>
-                <div className="config-group" style={{ marginTop: '0.75rem' }}>
-                  <label className="config-label">
-                    <span>Vitesse maximale des mots</span>
-                    <span>{maxWordSpeed}x</span>
-                  </label>
-                  <input 
-                    type="range" 
-                    min="0.3" 
-                    max="2.0" 
-                    step="0.1" 
-                    className="config-slider"
-                    value={maxWordSpeed}
-                    onChange={(e) => handleMaxWordSpeedChange(parseFloat(e.target.value))}
-                  />
-                </div>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginTop: '0.5rem' }}>
-                  Ajustez les vitesses pour définir la plage de vitesse aléatoire de chaque mot.
-                </span>
-              </div>
-
-              {/* History Panel */}
               <div className="config-panel glass-panel" style={{ flexGrow: 1 }}>
                 <h3 className="config-title">
-                  <Calendar size={18} /> Historique des Parties
+                  <Calendar size={18} /> Historique des Sessions
                 </h3>
                 {history.length === 0 ? (
                   <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                    Aucune partie enregistrée pour le moment.
+                    Aucune session enregistrée pour le moment.
                   </p>
                 ) : (
                   <div className="history-list">
@@ -1078,75 +790,85 @@ export default function App() {
                 )}
               </div>
             </div>
+
           </div>
         )}
 
-        {/* MODE 1: MARATHON D'ÉLISONS */}
-        {isPlaying && gameMode === 'elision' && (
+        {/* B. ACTIVE GAMEPLAY */}
+        {isPlaying && (
           <div className="game-layout">
-            <div className="marathon-arena">
+            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
               
-              {/* Particle overlay */}
-              {particles.map(p => (
-                <div 
-                  key={p.id} 
-                  className="particle"
-                  style={{
-                    left: p.x,
-                    top: p.y,
-                    width: p.size,
-                    height: p.size,
-                    backgroundColor: p.color,
-                    '--dx': p.dx,
-                    '--dy': p.dy
-                  }}
-                />
-              ))}
-
-              {isPaused && (
-                <div className="modal-overlay" style={{ position: 'absolute', zIndex: 10 }}>
-                  <div className="glass-panel" style={{ padding: '2rem', textAlign: 'center' }}>
-                    <h3 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>Partie en Pause</h3>
-                    <button className="start-btn" onClick={() => setIsPaused(false)}>
-                      Reprendre
-                    </button>
+              {/* Timer & Count Bar */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', gap: '1.5rem' }}>
+                <div className="timer-container" style={{ flexGrow: 1 }}>
+                  <div className="timer-bar-bg">
+                    <div 
+                      className={`timer-bar-fill ${timer <= 20 ? 'danger' : timer <= 60 ? 'warning' : ''}`}
+                      style={{ width: `${(timer / maxTime) * 100}%` }}
+                    />
                   </div>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.95rem', minWidth: '70px', textAlign: 'right' }}>
+                    ⏱️ {formatTime(timer)}
+                  </span>
                 </div>
-              )}
-
-              {/* Arena window */}
-              <div className="floating-space glass-panel">
-                {floatingWords.length === 0 && (
-                  <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-                    En attente de mots...
-                  </div>
-                )}
-                {floatingWords.map(word => (
-                  <div 
-                    key={word.id}
-                    className="floating-word"
-                    style={{
-                      left: `${word.x}%`,
-                      top: `${word.y}%`
-                    }}
-                  >
-                    <span>{word.text}</span>
-                    <span className="translation-hint">{word.translation}</span>
-                  </div>
-                ))}
+                
+                <div className="glass-panel" style={{ padding: '0.4rem 1rem', fontSize: '0.85rem', fontWeight: 600, display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <span>Badges restants :</span>
+                  <span style={{ color: 'var(--color-accent)', fontSize: '1.05rem' }}>
+                    {badges.filter(b => !b.isDestroyed).length}
+                  </span>
+                </div>
               </div>
 
-              {/* Typing inputs & controls */}
+              {/* Badges Container Grid */}
+              <div className="badges-container">
+                <div className="badges-scrollable">
+                  <div className="badges-grid">
+                    {badges.map(badge => {
+                      const isHighlighted = typedText && badge.text.toLowerCase().startsWith(typedText.trim().toLowerCase());
+                      let cardTypeClass = 'badge-elision';
+                      let tenseLabel = 'Élision';
+                      
+                      if (badge.tense === 'past') {
+                        cardTypeClass = 'badge-past';
+                        tenseLabel = 'Passé';
+                      } else if (badge.tense === 'present') {
+                        cardTypeClass = 'badge-present';
+                        tenseLabel = 'Présent';
+                      } else if (badge.tense === 'future') {
+                        cardTypeClass = 'badge-future';
+                        tenseLabel = 'Futur';
+                      }
+
+                      return (
+                        <div 
+                          key={badge.id}
+                          id={`badge-${badge.id}`}
+                          onClick={() => handleBadgeClick(badge)}
+                          className={`badge-item ${cardTypeClass} ${isHighlighted ? 'highlighted' : ''} ${badge.isDestroyed ? 'destroyed' : ''}`}
+                        >
+                          <span className="badge-tag">{tenseLabel}</span>
+                          <span className="badge-text">{badge.text}</span>
+                          <span className="badge-translation">{badge.translation}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Typing inputs */}
               <div className="typing-bar">
                 <div className="input-container">
                   <input
                     ref={inputRef}
                     type="text"
                     className={`typing-input ${inputState === 'error' ? 'error' : ''} ${inputState === 'correct' ? 'correct' : ''}`}
-                    placeholder="Tapez le mot français ici..."
+                    placeholder="Saisissez un mot pour le détruire..."
                     value={typedText}
                     onChange={handleInputChange}
-                    disabled={isPaused}
+                    disabled={isPaused || isWaveTransition}
                     autoComplete="off"
                     autoCapitalize="off"
                     autoCorrect="off"
@@ -1155,7 +877,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Character palette helper */}
+              {/* Accent Helpers */}
               <div className="character-guide">
                 {['é', 'è', 'à', 'ù', 'ç', 'œ', 'æ', 'â', 'ê', 'î', 'ô', 'û', "'"].map(c => (
                   <button 
@@ -1167,145 +889,15 @@ export default function App() {
                   </button>
                 ))}
                 <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  <Info size={14} /> Astuce: Vous pouvez seulement valider le verbe lorsqu'il flotte dans sa zone de conjugaison.
+                  <Info size={14} /> Astuce: Cliquez sur un badge pour écouter sa prononciation.
                 </div>
               </div>
-     
+
             </div>
           </div>
         )}
 
-        {/* UNIFIED GAME ARENA */}
-        {isPlaying && (
-          <div className="game-layout">
-            <div className="tense-arena" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '520px', position: 'relative', width: '100%' }}>
-              
-              {/* Particle overlay */}
-              {particles.map(p => (
-                <div 
-                  key={p.id} 
-                  className="particle"
-                  style={{
-                    left: p.x,
-                    top: p.y,
-                    width: p.size,
-                    height: p.size,
-                    backgroundColor: p.color,
-                    '--dx': p.dx,
-                    '--dy': p.dy
-                  }}
-                />
-              ))}
-
-              {isPaused && (
-                <div className="modal-overlay" style={{ position: 'absolute', zIndex: 10 }}>
-                  <div className="glass-panel" style={{ padding: '2rem', textAlign: 'center' }}>
-                    <h3 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>Partie en Pause</h3>
-                    <button className="start-btn" onClick={() => setIsPaused(false)}>
-                      Reprendre
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Background columns partitioning the board space */}
-              <div className="columns-background-grid" style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr 1fr',
-                gap: '1.25rem',
-                flexGrow: 1,
-                minHeight: '400px',
-                position: 'relative',
-                borderRadius: '16px',
-                overflow: 'hidden'
-              }}>
-                <div className="column-bg past" style={{ background: 'rgba(236, 72, 153, 0.04)', border: '1px dashed rgba(236, 72, 153, 0.12)', borderRadius: '12px', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '1.25rem' }}>
-                  <span style={{ color: 'var(--color-past)', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.3rem', letterSpacing: '0.5px' }}>PASSÉ (Past)</span>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Zone de gauche (0% - 33%)</span>
-                </div>
-                <div className="column-bg present" style={{ background: 'rgba(16, 185, 129, 0.04)', border: '1px dashed rgba(16, 185, 129, 0.12)', borderRadius: '12px', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '1.25rem' }}>
-                  <span style={{ color: 'var(--color-present)', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.3rem', letterSpacing: '0.5px' }}>PRÉSENT (Present)</span>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Zone du milieu (33% - 66%)</span>
-                </div>
-                <div className="column-bg future" style={{ background: 'rgba(6, 182, 212, 0.04)', border: '1px dashed rgba(6, 182, 212, 0.12)', borderRadius: '12px', display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '1.25rem' }}>
-                  <span style={{ color: 'var(--color-future)', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.3rem', letterSpacing: '0.5px' }}>FUTUR (Future)</span>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Zone de droite (66% - 100%)</span>
-                </div>
-                
-                {/* Floating words overlay container */}
-                <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 5 }}>
-                  {floatingWords.map(word => {
-                    // Check which column the word is in based on its X position
-                    const currentCol = word.x < 33.3 ? 'past' : (word.x < 66.6 ? 'present' : 'future');
-                    const isMatchable = currentCol === word.tense;
-                    
-                    return (
-                      <div 
-                        key={word.id}
-                        className={`floating-word ${isMatchable ? word.tense : ''}`}
-                        style={{
-                          position: 'absolute',
-                          left: `${word.x}%`,
-                          top: `${word.y}%`,
-                          pointerEvents: 'auto',
-                          opacity: isMatchable ? 1 : 0.6,
-                          borderColor: isMatchable ? 'currentColor' : 'rgba(255,255,255,0.06)',
-                          boxShadow: isMatchable ? `0 0 15px currentColor` : 'none',
-                          transform: isMatchable ? 'scale(1.08)' : 'scale(0.95)',
-                          transition: 'opacity 0.2s, border-color 0.2s, transform 0.2s, box-shadow 0.2s'
-                        }}
-                      >
-                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                           {isMatchable && <span style={{ fontSize: '0.85rem' }}>🎯</span>}
-                           <span>{word.text}</span>
-                         </div>
-                         <span className="translation-hint">{word.translation}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-     
-              {/* Single typing input box at the bottom of the arena */}
-              <div className="typing-bar" style={{ marginTop: '1.5rem' }}>
-                <div className="input-container" style={{ width: '100%' }}>
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    className={`typing-input ${inputState === 'error' ? 'error' : ''} ${inputState === 'correct' ? 'correct' : ''}`}
-                    placeholder="Tapez le verbe quand il flotte dans sa zone correspondante !"
-                    value={typedText}
-                    onChange={handleInputChange}
-                    disabled={isPaused}
-                    autoComplete="off"
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    spellCheck="false"
-                  />
-                </div>
-              </div>
-     
-              {/* Accent helper palette */}
-              <div className="character-guide" style={{ marginTop: '0.75rem' }}>
-                {['é', 'è', 'à', 'ù', 'ç', 'œ', 'æ', 'â', 'ê', 'î', 'ô', 'û', "'"].map(c => (
-                  <button 
-                    key={c}
-                    className="accent-helper-btn"
-                    onClick={() => handleAccentClick(c)}
-                  >
-                    {c}
-                  </button>
-                ))}
-                <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  <Info size={14} /> Astuce: Vous pouvez seulement valider le verbe lorsqu'il flotte dans sa zone de conjugaison.
-                </div>
-              </div>
-     
-            </div>
-          </div>
-        )}
-
-        {/* GAME OVER MODAL */}
+        {/* C. GAME OVER MODAL */}
         {showGameOver && (
           <div className="modal-overlay">
             <div className="game-over-modal glass-panel">
@@ -1324,39 +916,138 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Missed words review */}
+              {/* Review words */}
               {reviewWords.length > 0 && (
                 <div className="modal-word-review">
-                  <div className="modal-word-review-title">Mots à réviser :</div>
-                  {reviewWords.map((word, idx) => (
+                  <div className="modal-word-review-title">Mots non complétés à réviser :</div>
+                  {reviewWords.slice(0, 30).map((badge, idx) => (
                     <div key={idx} className="review-item">
-                      <span className="spelling">{word.text}</span>
-                      <span className="translation">{word.translation} {word.tense ? `(${word.tense})` : ''}</span>
+                      <span className="spelling">{badge.text}</span>
+                      <span className="translation">{badge.translation} ({badge.tense})</span>
                     </div>
                   ))}
+                  {reviewWords.length > 30 && (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                      ... et {reviewWords.length - 30} autres badges.
+                    </div>
+                  )}
                 </div>
               )}
 
               <div className="modal-actions">
-                <button 
-                  className="modal-btn primary"
-                  onClick={() => startGame(gameMode)}
-                >
+                <button className="modal-btn primary" onClick={startGame}>
                   Rejouer
                 </button>
                 <button 
-                  className="modal-btn secondary"
+                  className="modal-btn secondary" 
                   onClick={() => {
                     setGameMode('dashboard');
                     setShowGameOver(false);
                   }}
                 >
-                  Menu principal
+                  Menu Principal
                 </button>
               </div>
             </div>
           </div>
         )}
+
+        {/* D. SETTINGS MODAL */}
+        {showSettings && (
+          <div className="modal-overlay">
+            <div className="settings-modal glass-panel">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 className="config-title" style={{ margin: 0 }}>
+                  <Volume2 size={22} style={{ color: 'var(--color-accent)' }} /> Configuration Vocale
+                </h3>
+                <button 
+                  onClick={() => setShowSettings(false)} 
+                  className="test-voice-btn" 
+                  style={{ border: 'none', background: 'transparent', padding: '0.2rem' }}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="config-group">
+                <label className="config-label">Moteur de synthèse vocale</label>
+                <select 
+                  className="config-select" 
+                  value={ttsEngine} 
+                  onChange={(e) => handleTtsEngineChange(e.target.value)}
+                >
+                  <option value="cloud">🌟 Google Cloud (Haute qualité, Internet)</option>
+                  <option value="openai">🔥 OpenAI Neural (Premium, Internet)</option>
+                  <option value="local">🤖 Système Offline (Standard/Robotique)</option>
+                </select>
+              </div>
+
+              {ttsEngine === 'local' && (
+                <>
+                  <div className="config-group">
+                    <label className="config-label">Voix locale du système</label>
+                    <select 
+                       className="config-select" 
+                       value={selectedVoice} 
+                       onChange={(e) => handleVoiceChange(e.target.value)}
+                    >
+                      {voices.filter(v => v.lang.startsWith('fr')).length === 0 ? (
+                        <option value="">Aucune voix locale française trouvée</option>
+                      ) : null}
+                      {voices.map(voice => (
+                        <option key={voice.voiceURI} value={voice.voiceURI}>
+                          {voice.name} ({voice.lang})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+      
+                  <div className="config-group">
+                    <label className="config-label">
+                      <span>Hauteur (Pitch)</span>
+                      <span>{speechPitch}x</span>
+                    </label>
+                    <input 
+                      type="range" 
+                      min="0.6" 
+                      max="1.4" 
+                      step="0.1" 
+                      className="config-slider"
+                      value={speechPitch}
+                      onChange={(e) => handlePitchChange(parseFloat(e.target.value))}
+                    />
+                  </div>
+                </>
+              )}
+
+              <div className="config-group">
+                <label className="config-label">
+                  <span>Vitesse de lecture</span>
+                  <span>{speechRate}x</span>
+                </label>
+                <input 
+                  type="range" 
+                  min="0.3" 
+                  max="1.2" 
+                  step="0.05" 
+                  className="config-slider"
+                  value={speechRate}
+                  onChange={(e) => handleRateChange(parseFloat(e.target.value))}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
+                <button className="test-voice-btn" style={{ flexGrow: 1 }} onClick={handleTestVoice}>
+                  <Volume2 size={16} /> Tester la voix
+                </button>
+                <button className="modal-btn primary" style={{ flexGrow: 1 }} onClick={() => setShowSettings(false)}>
+                  Fermer
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
       </main>
     </div>
   );

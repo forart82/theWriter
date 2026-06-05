@@ -190,6 +190,15 @@ export default function App() {
     return 3.0;
   }, [streak]);
 
+  // Calculate system typing rank
+  const getRating = useCallback(() => {
+    const accuracy = wordsAttempted > 0 ? (wordsCorrect / wordsAttempted) * 100 : 100;
+    if (accuracy >= 95 && level >= 3) return { grade: 'S-CLASS', desc: 'CYBERGOD DESTRUCT', color: '#ffcc00' };
+    if (accuracy >= 85) return { grade: 'A-CLASS', desc: 'ELITE OPERATIVE', color: '#39ff14' };
+    if (accuracy >= 70) return { grade: 'B-CLASS', desc: 'NET RUNNER', color: '#00f0ff' };
+    return { grade: 'C-CLASS', desc: 'RECRUIT DESTRUCT', color: '#ff0055' };
+  }, [wordsAttempted, wordsCorrect, level]);
+
   // 3. HELPER FUNCTIONS
 
   // Notification trigger
@@ -1070,35 +1079,69 @@ export default function App() {
           <div className="modal-overlay">
             <div className={`game-over-modal glass-panel ${shield > 0 && timer > 0 ? 'victory' : ''}`}>
               <h2 className="modal-title">
-                {shield > 0 && timer > 0 ? 'SYSTÈME PURGÉ !' : 'SYSTÈME DÉSHABILITÉ'}
+                {shield > 0 && timer > 0 ? 'PURGE COMPLÉTÉE AVEC SUCCÈS' : 'DÉFAILLANCE CRITIQUE DU SYSTÈME'}
               </h2>
+              <div className="modal-log-sub">
+                {shield > 0 && timer > 0 ? '// STATUS: RUN_COMPLETED' : timer === 0 ? '// STATUS: TIME_EXPIRED' : '// STATUS: SHIELD_DEPLETED'}
+              </div>
               
               <div className="modal-stats">
                 <div className="modal-stat-box">
                   <span className="modal-stat-label">Score Final</span>
-                  <span className="modal-stat-value" style={{ color: 'var(--color-warning)', textShadow: '0 0 8px rgba(255, 157, 0, 0.4)' }}>{score}</span>
+                  <span className="modal-stat-value" style={{ color: 'var(--color-warning)', textShadow: '0 0 8px rgba(255, 157, 0, 0.4)' }}>{score} pts</span>
+                  <span className="modal-stat-desc">Données accumulées</span>
+                </div>
+                <div className="modal-stat-box">
+                  <span className="modal-stat-label">Vague Atteinte</span>
+                  <span className="modal-stat-value" style={{ color: 'var(--color-past)', textShadow: '0 0 8px rgba(255, 0, 85, 0.4)' }}>VAGUE {level}</span>
+                  <span className="modal-stat-desc">Dernier palier d'attaque</span>
+                </div>
+                <div className="modal-stat-box">
+                  <span className="modal-stat-label">Cibles Détruites</span>
+                  <span className="modal-stat-value" style={{ color: 'var(--color-future)', textShadow: '0 0 8px rgba(0, 240, 255, 0.4)' }}>{wordsCorrect} / {wordsAttempted}</span>
+                  <span className="modal-stat-desc">Purge de badges</span>
                 </div>
                 <div className="modal-stat-box">
                   <span className="modal-stat-label">Précision</span>
-                  <span className="modal-stat-value" style={{ color: 'var(--color-present)' }}>
+                  <span className="modal-stat-value" style={{ color: 'var(--color-present)', textShadow: '0 0 8px rgba(57, 255, 20, 0.4)' }}>
                     {wordsAttempted > 0 ? Math.round((wordsCorrect / wordsAttempted) * 100) : 100}%
                   </span>
+                  <span className="modal-stat-desc">Exactitude de frappe</span>
                 </div>
               </div>
 
-              {/* Review words */}
+              {/* Rating Card Display */}
+              {(() => {
+                const rating = getRating();
+                return (
+                  <div className="rating-badge-container" style={{ borderColor: rating.color }}>
+                    <span className="rating-badge-label">Rang Opérationnel :</span>
+                    <span className="rating-badge-desc" style={{ color: rating.color }}>{rating.desc}</span>
+                    <span className="rating-badge-tag" style={{ color: rating.color }}>{rating.grade}</span>
+                  </div>
+                );
+              })()}
+
+              {/* Review words with audio replay button */}
               {reviewWords.length > 0 && (
                 <div className="modal-word-review">
-                  <div className="modal-word-review-title">Mots cibles non détruits à réviser :</div>
+                  <div className="modal-word-review-title">Fichiers non purgés (Cliquez pour prononcer) :</div>
                   {reviewWords.slice(0, 30).map((badge, idx) => (
                     <div key={idx} className="review-item">
                       <span className="spelling" style={{ color: 'var(--color-past)' }}>{badge.text}</span>
-                      <span className="translation">{badge.translation} ({badge.tense})</span>
+                      <span className="translation">{badge.translation} {badge.tense !== 'any' ? `(${badge.tense})` : ''}</span>
+                      <button 
+                        className="review-play-btn" 
+                        onClick={() => speakWord(badge.text)}
+                        title="Réécouter la cible"
+                      >
+                        🔊
+                      </button>
                     </div>
                   ))}
                   {reviewWords.length > 30 && (
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                      ... et {reviewWords.length - 30} autres cibles.
+                      ... et {reviewWords.length - 30} autres cibles de données.
                     </div>
                   )}
                 </div>
@@ -1106,7 +1149,7 @@ export default function App() {
 
               <div className="modal-actions">
                 <button className="modal-btn primary" onClick={startGame}>
-                  Réinitialiser
+                  Initialiser nouveau run
                 </button>
                 <button 
                   className="modal-btn secondary" 

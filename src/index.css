@@ -521,46 +521,64 @@ body {
   transform: translateY(-2px) scale(1.03);
 }
 
-/* Badge Categories Outline & Shadows */
+/* Badge Categories Outline & Shadows (Always Neon Glowing) */
 .badge-past {
   border-color: var(--color-past);
   color: var(--color-past);
+  box-shadow: 0 0 8px var(--color-past-glow), inset 0 0 4px var(--color-past-glow);
+  text-shadow: 0 0 5px var(--color-past-glow);
 }
 .badge-past:hover {
-  box-shadow: 0 0 12px var(--color-past-glow), inset 0 0 4px var(--color-past-glow);
+  box-shadow: 0 0 18px var(--color-past), inset 0 0 8px var(--color-past-glow);
+  filter: brightness(1.2);
 }
 
 .badge-present {
   border-color: var(--color-present);
   color: var(--color-present);
+  box-shadow: 0 0 8px var(--color-present-glow), inset 0 0 4px var(--color-present-glow);
+  text-shadow: 0 0 5px var(--color-present-glow);
 }
 .badge-present:hover {
-  box-shadow: 0 0 12px var(--color-present-glow), inset 0 0 4px var(--color-present-glow);
+  box-shadow: 0 0 18px var(--color-present), inset 0 0 8px var(--color-present-glow);
+  filter: brightness(1.2);
 }
 
 .badge-future {
   border-color: var(--color-future);
   color: var(--color-future);
+  box-shadow: 0 0 8px var(--color-future-glow), inset 0 0 4px var(--color-future-glow);
+  text-shadow: 0 0 5px var(--color-future-glow);
 }
 .badge-future:hover {
-  box-shadow: 0 0 12px var(--color-future-glow), inset 0 0 4px var(--color-future-glow);
+  box-shadow: 0 0 18px var(--color-future), inset 0 0 8px var(--color-future-glow);
+  filter: brightness(1.2);
 }
 
 .badge-elision {
   border-color: var(--color-elision);
   color: var(--color-elision);
+  box-shadow: 0 0 8px var(--color-elision-glow), inset 0 0 4px var(--color-elision-glow);
+  text-shadow: 0 0 5px var(--color-elision-glow);
 }
 .badge-elision:hover {
-  box-shadow: 0 0 12px var(--color-elision-glow), inset 0 0 4px var(--color-elision-glow);
+  box-shadow: 0 0 18px var(--color-elision), inset 0 0 8px var(--color-elision-glow);
+  filter: brightness(1.2);
 }
 
 /* Prefix matching targeting HUD bracket overlays */
 .badge-item.highlighted {
   border-color: var(--color-target) !important;
   color: var(--color-target) !important;
-  box-shadow: 0 0 18px var(--color-target-glow), inset 0 0 6px var(--color-target-glow) !important;
-  transform: translateY(-3px) scale(1.06) !important;
+  box-shadow: 0 0 20px var(--color-target), inset 0 0 8px var(--color-target-glow) !important;
+  transform: translateY(-4px) scale(1.06) !important;
   z-index: 2;
+  animation: pulseTarget 1.5s infinite alternate;
+}
+
+@keyframes pulseTarget {
+  0% { box-shadow: 0 0 12px var(--color-target-glow), inset 0 0 6px var(--color-target-glow); }
+  100% { box-shadow: 0 0 25px var(--color-target), inset 0 0 12px var(--color-target-glow); }
 }
 
 .badge-item.highlighted::before {

@@ -18,19 +18,23 @@ const allPhrases = vocabData.phrases.filter(p =>
 export const totalWordsCount = allWords.length;
 export const totalPhrasesCount = allPhrases.length;
 
+// Combine words and phrases to mix them up at all levels
+const combinedPool = [...allWords, ...allPhrases];
+
 export function getWordsForLevel(level) {
   if (level === 1) {
-    // Easy: short words (length <= 7)
-    return allWords.filter(w => w.text.length <= 7);
+    // Wave 1: short words and phrases (length <= 9)
+    return combinedPool.filter(w => w.text.length <= 9);
   } else if (level === 2) {
-    // Medium: words with length <= 11
-    return allWords.filter(w => w.text.length <= 11);
+    // Wave 2: medium words and phrases (length <= 14)
+    return combinedPool.filter(w => w.text.length <= 14);
   } else if (level === 3) {
-    // Hard: all filtered words
-    return allWords;
+    // Wave 3: longer words and phrases (length <= 20)
+    return combinedPool.filter(w => w.text.length <= 20);
   } else {
-    // Level 4+: Mix of words and phrases
-    return [...allWords, ...allPhrases];
+    // Wave 4+: all lengths mixed
+    return combinedPool;
   }
 }
+
 

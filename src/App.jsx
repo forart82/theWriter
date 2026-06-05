@@ -36,9 +36,63 @@ const formatTime = (seconds) => {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 };
 
+// Web Audio API Synthesizer Sound Generator
+const playSynthSound = (type) => {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    
+    if (type === 'match') {
+      // Laser sweep up
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(140, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(700, ctx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.12);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.12);
+    } else if (type === 'error') {
+      // Retro buzz
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(100, ctx.currentTime);
+      osc.frequency.setValueAtTime(80, ctx.currentTime + 0.08);
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.18);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.18);
+    } else if (type === 'wave-clear') {
+      // Cyber chime arpeggio
+      const notes = [293.66, 349.23, 440.00, 587.33, 698.46, 880.00, 1174.66]; // D minor arpeggio
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + i * 0.07);
+        gain.gain.setValueAtTime(0.06, ctx.currentTime + i * 0.07);
+        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + i * 0.07 + 0.3);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.07);
+        osc.stop(ctx.currentTime + i * 0.07 + 0.3);
+      });
+    }
+  } catch (err) {
+    console.warn("Web Audio synthesis failed", err);
+  }
+};
+
 export default function App() {
-  // 1. STATE INITIALIZATION (Using lazy initializers to avoid double render calls)
-  const [user, setUser] = useState(undefined); // undefined = loading, null = unauthenticated, object = authenticated
+  // 1. STATE INITIALIZATION (Using lazy initializers)
+  const [user, setUser] = useState(undefined); 
   const [userId, setUserId] = useState('');
 
   const [gameMode, setGameMode] = useState('dashboard'); // 'dashboard', 'play'
@@ -50,9 +104,13 @@ export default function App() {
 
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState(0);
-  const [level, setLevel] = useState(1); // level acts as the Wave number
+  const [level, setLevel] = useState(1); // Wave number
   const [wordsAttempted, setWordsAttempted] = useState(0);
   const [wordsCorrect, setWordsCorrect] = useState(0);
+
+  // HP Shield and Cyber Flasher
+  const [shield, setShield] = useState(100);
+  const [isFlashingError, setIsFlashingError] = useState(false);
 
   const [badges, setBadges] = useState([]);
   const [particles, setParticles] = useState([]);
@@ -72,6 +130,19 @@ export default function App() {
       }
     }
     return [];
+  });
+
+  // Persist completed items to guarantee no repeats
+  const [completedTexts, setCompletedTexts] = useState(() => {
+    const saved = localStorage.getItem('thewriter_completed_texts');
+    if (saved) {
+      try {
+        return new Set(JSON.parse(saved));
+      } catch (e) {
+        console.error('Failed to parse completed texts', e);
+      }
+    }
+    return new Set();
   });
 
   const [timer, setTimer] = useState(180);
@@ -100,6 +171,14 @@ export default function App() {
   // 2. REFS
   const inputRef = useRef(null);
   const notificationTimeoutRef = useRef(null);
+
+  // Calculate score multiplier based on streak
+  const getMultiplier = useCallback(() => {
+    if (streak < 5) return 1.0;
+    if (streak < 10) return 1.5;
+    if (streak < 15) return 2.0;
+    return 3.0;
+  }, [streak]);
 
   // 3. HELPER FUNCTIONS
 
@@ -286,7 +365,7 @@ export default function App() {
         y: `${y}px`,
         dx: `${Math.cos(angle) * speed * 25}px`,
         dy: `${Math.sin(angle) * speed * 25}px`,
-        size: `${3 + Math.random() * 6}px`,
+        size: `${4 + Math.random() * 8}px`,
         color: particleColor
       };
     });
@@ -297,13 +376,28 @@ export default function App() {
     }, 850);
   };
 
-  // Selection of badges for Level
-  const selectBadgesForLevel = (lvl) => {
+  // Non-repeating selector: Select badges for Level
+  const selectBadgesForLevel = useCallback((lvl) => {
     const pool = getWordsForLevel(lvl);
     if (!pool || pool.length === 0) return [];
     
-    const count = Math.min(pool.length, 50 + lvl * 15);
-    const shuffled = shuffleArray(pool);
+    const count = Math.min(pool.length, 40 + lvl * 10);
+    
+    // Filter out already completed items
+    let available = pool.filter(w => !completedTexts.has(w.text));
+    
+    // Reset completed items in this pool if not enough left
+    if (available.length < count) {
+      setCompletedTexts(prev => {
+        const updated = new Set(prev);
+        pool.forEach(w => updated.delete(w.text));
+        localStorage.setItem('thewriter_completed_texts', JSON.stringify(Array.from(updated)));
+        return updated;
+      });
+      available = pool;
+    }
+    
+    const shuffled = shuffleArray(available);
     
     return shuffled.slice(0, count).map((w, index) => ({
       id: index,
@@ -312,7 +406,7 @@ export default function App() {
       tense: w.tense || 'any',
       isDestroyed: false
     }));
-  };
+  }, [completedTexts]);
 
   // Game lifecycle controls
   const endGame = useCallback(() => {
@@ -349,6 +443,9 @@ export default function App() {
   const handleWaveCleared = useCallback(() => {
     setIsWaveTransition(true);
     triggerNotification(`Vague ${level} réussie ! 🎉 Vague suivante en préparation...`, 'success');
+    
+    // Sound FX: wave cleared chime
+    playSynthSound('wave-clear');
     speakWord("Excellent ! Vague terminée.");
     
     setTimeout(() => {
@@ -357,11 +454,12 @@ export default function App() {
         const newBadges = selectBadgesForLevel(nextLevel);
         setBadges(newBadges);
         setTimer(180);
+        setShield(Math.min(100, shield + 25)); // Repair system shield slightly on wave clear
         setIsWaveTransition(false);
         return nextLevel;
       });
     }, 2000);
-  }, [level, triggerNotification, speakWord]);
+  }, [level, triggerNotification, speakWord, selectBadgesForLevel, shield]);
 
   const startGame = () => {
     if (!auth.currentUser) {
@@ -380,6 +478,7 @@ export default function App() {
     setReviewWords([]);
     setTypedText('');
     setErrorsThisWord(0);
+    setShield(100);
 
     const initialBadges = selectBadgesForLevel(1);
     setBadges(initialBadges);
@@ -392,6 +491,8 @@ export default function App() {
   };
 
   const handleBadgeSolved = (badge) => {
+    // Sound FX: laser pop match
+    playSynthSound('match');
     speakWord(badge.text);
 
     // Get badge position on screen
@@ -403,6 +504,14 @@ export default function App() {
       createExplosion(x, y, badge.tense);
     }
 
+    // Add to completed set
+    setCompletedTexts(prev => {
+      const updated = new Set(prev);
+      updated.add(badge.text);
+      localStorage.setItem('thewriter_completed_texts', JSON.stringify(Array.from(updated)));
+      return updated;
+    });
+
     // Mark badge destroyed
     setBadges(prev => prev.map(b => b.id === badge.id ? { ...b, isDestroyed: true } : b));
 
@@ -413,10 +522,12 @@ export default function App() {
     const newStreak = streak + 1;
     setStreak(newStreak);
 
-    // Score calculations
+    // Shield recovery on solved word
+    setShield(prev => Math.min(100, prev + 3));
+
+    // Score calculations (with multiplier)
     const baseVal = Math.max(20, 100 - (errorsThisWord * 15));
-    const streakBonus = newStreak * 10;
-    const scoreGain = baseVal + streakBonus;
+    const scoreGain = Math.round(baseVal * getMultiplier());
     setScore(prev => prev + scoreGain);
     setErrorsThisWord(0);
 
@@ -450,6 +561,25 @@ export default function App() {
       setInputState('error');
       if (text.length > lastCheckedInput.length) {
         setErrorsThisWord(prev => prev + 1);
+        
+        // Error audio buzz
+        playSynthSound('error');
+
+        // Screen border error flasher
+        setIsFlashingError(true);
+        setTimeout(() => setIsFlashingError(false), 200);
+
+        // HP Shield damage on typing error
+        setShield(prev => {
+          const nextShield = Math.max(0, prev - 5);
+          if (nextShield <= 0) {
+            // Trigger game over next render loop
+            setTimeout(() => {
+              endGame();
+            }, 0);
+          }
+          return nextShield;
+        });
       }
     } else {
       setInputState('normal');
@@ -582,8 +712,13 @@ export default function App() {
   }
 
   // C. AUTHENTICATED WORKSPACE
+  const currentMultiplier = getMultiplier();
+
   return (
     <div className="app-container">
+      {/* Top level red screen error flash overlay */}
+      {isFlashingError && <div className="screen-red-flasher" />}
+
       {/* Top level particle overlay */}
       <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 9999 }}>
         {particles.map(p => (
@@ -662,14 +797,14 @@ export default function App() {
         )}
       </header>
 
-      {/* Stats bar */}
+      {/* Stats bar HUD */}
       {isPlaying && (
         <section className="stats-bar">
           <div className="stat-card glass-panel">
             <div className="stat-icon-wrapper score">
               <Trophy size={20} />
             </div>
-            <div className="stat-info">
+            <div className="stat-info" style={{ width: '100%' }}>
               <span className="stat-label">Score</span>
               <span className="stat-value">{score}</span>
             </div>
@@ -690,8 +825,24 @@ export default function App() {
               <Flame size={20} />
             </div>
             <div className="stat-info">
-              <span className="stat-label">Série Active</span>
-              <span className="stat-value">{streak}🔥</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span className="stat-label">Série / Multiplier</span>
+                {currentMultiplier > 1.0 && (
+                  <span style={{ 
+                    fontSize: '0.65rem', 
+                    background: 'var(--color-warning)', 
+                    color: '#000', 
+                    padding: '0.05rem 0.25rem', 
+                    borderRadius: '2px', 
+                    fontWeight: 900 
+                  }}>
+                    {currentMultiplier}x 🔥
+                  </span>
+                )}
+              </div>
+              <span className="stat-value" style={{ color: currentMultiplier > 1.0 ? 'var(--color-warning)' : 'inherit' }}>
+                {streak}
+              </span>
             </div>
           </div>
           <div className="stat-card glass-panel">
@@ -699,8 +850,16 @@ export default function App() {
               <Zap size={20} />
             </div>
             <div className="stat-info">
-              <span className="stat-label">Vague / Niveau</span>
-              <span className="stat-value">{level}</span>
+              <span className="stat-label">Vague / HP Shield</span>
+              <span className="stat-value" style={{ fontSize: '1.1rem' }}>
+                VAGUE {level}
+              </span>
+              <div className="shield-bar-bg">
+                <div 
+                  className={`shield-bar-fill ${shield <= 30 ? 'low' : ''}`} 
+                  style={{ width: `${shield}%` }} 
+                />
+              </div>
             </div>
           </div>
         </section>
@@ -715,9 +874,9 @@ export default function App() {
             
             {/* Welcome info */}
             <div className="welcome-panel glass-panel">
-              <h2 className="welcome-title">Détruisez les Badges par l'Écriture</h2>
+              <h2 className="welcome-title">Système D'Écriture Cyber</h2>
               <p className="welcome-desc">
-                Des centaines de badges s'affichent sur l'écran. Saisissez chaque mot ou verbe français pour le faire exploser. Progressez et surmontez les vagues de conjugaison et d'élisions !
+                Des dizaines de badges de données flottent sur la grille de terminal. Saisissez leur texte français pour désintégrer la puce de données. Restaurez votre bouclier système, accumulez les multiplicateurs de série et survivez aux vagues !
               </p>
               
               <div style={{
@@ -725,11 +884,10 @@ export default function App() {
                 gap: '1rem',
                 fontSize: '0.9rem',
                 color: 'var(--text-secondary)',
-                background: 'rgba(255, 255, 255, 0.03)',
+                background: 'rgba(0, 240, 255, 0.03)',
                 padding: '0.6rem 1rem',
-                borderRadius: '8px',
-                border: '1px solid var(--border-glass)',
-                width: 'fit-content'
+                borderRadius: '4px',
+                border: '1px solid rgba(0, 240, 255, 0.1)'
               }}>
                 <span>📊 <strong>Base Active :</strong></span>
                 <span>{totalWordsCount} mots</span>
@@ -741,24 +899,24 @@ export default function App() {
                 fontSize: '0.95rem',
                 color: 'var(--text-secondary)',
                 lineHeight: '1.6',
-                background: 'rgba(139, 92, 246, 0.03)',
-                border: '1px solid rgba(139, 92, 246, 0.1)',
+                background: 'rgba(0, 240, 255, 0.01)',
+                border: '1px solid rgba(0, 240, 255, 0.08)',
                 padding: '1.25rem',
-                borderRadius: '12px',
+                borderRadius: '4px',
                 margin: '1rem 0',
                 width: '100%'
               }}>
-                <strong style={{ color: 'var(--color-accent)', display: 'block', marginBottom: '0.5rem' }}>💡 Types de badges à détruire :</strong>
+                <strong style={{ color: 'var(--text-cyber)', display: 'block', marginBottom: '0.5rem', fontFamily: 'var(--font-display)' }}>💡 HUD DE CIBLAGE :</strong>
                 <ul style={{ paddingLeft: '1.2rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  <li><span style={{ color: 'var(--color-accent)', fontWeight: 'bold' }}>💜 Élisions :</span> Mots avec apostrophes (comme <em>l'amour</em>, <em>qu'il</em>)</li>
-                  <li><span style={{ color: 'var(--color-past)', fontWeight: 'bold' }}>🩷 Passé :</span> Verbes conjugués au passé (comme <em>j'ai chanté</em>)</li>
-                  <li><span style={{ color: 'var(--color-present)', fontWeight: 'bold' }}>💚 Présent :</span> Verbes au présent (comme <em>je chante</em>)</li>
-                  <li><span style={{ color: 'var(--color-future)', fontWeight: 'bold' }}>🩵 Futur :</span> Verbes conjugués au futur (comme <em>je chanterai</em>)</li>
+                  <li><span style={{ color: 'var(--color-elision)', fontWeight: 'bold' }}>💜 Élisions :</span> Mots avec apostrophes (e.g. <em>l'amour</em>, <em>qu'il</em>)</li>
+                  <li><span style={{ color: 'var(--color-past)', fontWeight: 'bold' }}>🩷 Passé :</span> Verbes au passé (e.g. <em>j'ai chanté</em>)</li>
+                  <li><span style={{ color: 'var(--color-present)', fontWeight: 'bold' }}>💚 Présent :</span> Verbes au présent (e.g. <em>je chante</em>)</li>
+                  <li><span style={{ color: 'var(--color-future)', fontWeight: 'bold' }}>🩵 Futur :</span> Verbes au futur (e.g. <em>je chanterai</em>)</li>
                 </ul>
               </div>
 
               <button className="start-btn" onClick={startGame}>
-                Lancer l'entraînement <ArrowRight size={18} />
+                Initialiser le ciblage <ArrowRight size={18} />
               </button>
             </div>
 
@@ -766,22 +924,22 @@ export default function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               <div className="config-panel glass-panel" style={{ flexGrow: 1 }}>
                 <h3 className="config-title">
-                  <Calendar size={18} /> Historique des Sessions
+                  <Calendar size={18} /> Sessions Précédentes
                 </h3>
                 {history.length === 0 ? (
                   <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                    Aucune session enregistrée pour le moment.
+                    Aucun log de session enregistré.
                   </p>
                 ) : (
                   <div className="history-list">
                     {history.map((item, idx) => (
                       <div key={idx} className="history-item">
                         <div>
-                          <div style={{ fontWeight: 600 }}>{item.mode}</div>
+                          <div style={{ fontWeight: 600, color: 'var(--text-cyber)' }}>{item.mode}</div>
                           <div className="history-date">{item.date}</div>
                         </div>
                         <div className="history-stats">
-                          <span style={{ color: 'var(--color-accent)', fontWeight: 700 }}>{item.score} pts</span>
+                          <span style={{ color: 'var(--color-warning)', fontWeight: 700 }}>{item.score} pts</span>
                           <span style={{ color: 'var(--text-secondary)' }}>{item.accuracy}% acc</span>
                         </div>
                       </div>
@@ -808,14 +966,14 @@ export default function App() {
                       style={{ width: `${(timer / maxTime) * 100}%` }}
                     />
                   </div>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.95rem', minWidth: '70px', textAlign: 'right' }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '1rem', color: 'var(--text-cyber)', minWidth: '70px', textAlign: 'right', textShadow: '0 0 5px rgba(0, 240, 255, 0.4)' }}>
                     ⏱️ {formatTime(timer)}
                   </span>
                 </div>
                 
-                <div className="glass-panel" style={{ padding: '0.4rem 1rem', fontSize: '0.85rem', fontWeight: 600, display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <span>Badges restants :</span>
-                  <span style={{ color: 'var(--color-accent)', fontSize: '1.05rem' }}>
+                <div className="glass-panel" style={{ padding: '0.4rem 1rem', fontSize: '0.85rem', fontWeight: 600, display: 'flex', gap: '0.5rem', alignItems: 'center', borderColor: 'rgba(0, 240, 255, 0.3)' }}>
+                  <span style={{ fontFamily: 'var(--font-display)', fontSize: '0.75rem', letterSpacing: '1px' }}>CIBLES RESTANTES :</span>
+                  <span style={{ color: 'var(--text-cyber)', fontFamily: 'var(--font-mono)', fontSize: '1.15rem', textShadow: '0 0 5px rgba(0, 240, 255, 0.5)' }}>
                     {badges.filter(b => !b.isDestroyed).length}
                   </span>
                 </div>
@@ -865,7 +1023,7 @@ export default function App() {
                     ref={inputRef}
                     type="text"
                     className={`typing-input ${inputState === 'error' ? 'error' : ''} ${inputState === 'correct' ? 'correct' : ''}`}
-                    placeholder="Saisissez un mot pour le détruire..."
+                    placeholder="Saisissez un mot ou une phrase cible..."
                     value={typedText}
                     onChange={handleInputChange}
                     disabled={isPaused || isWaveTransition}
@@ -889,7 +1047,7 @@ export default function App() {
                   </button>
                 ))}
                 <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  <Info size={14} /> Astuce: Cliquez sur un badge pour écouter sa prononciation.
+                  <Info size={14} /> Astuce: Les frappes manquées endommagent votre HP Shield.
                 </div>
               </div>
 
@@ -900,13 +1058,15 @@ export default function App() {
         {/* C. GAME OVER MODAL */}
         {showGameOver && (
           <div className="modal-overlay">
-            <div className="game-over-modal glass-panel">
-              <h2 className="modal-title">Entraînement Terminé !</h2>
+            <div className={`game-over-modal glass-panel ${shield > 0 && timer > 0 ? 'victory' : ''}`}>
+              <h2 className="modal-title">
+                {shield > 0 && timer > 0 ? 'SYSTÈME PURGÉ !' : 'SYSTÈME DÉSHABILITÉ'}
+              </h2>
               
               <div className="modal-stats">
                 <div className="modal-stat-box">
                   <span className="modal-stat-label">Score Final</span>
-                  <span className="modal-stat-value" style={{ color: 'var(--color-accent)' }}>{score}</span>
+                  <span className="modal-stat-value" style={{ color: 'var(--color-warning)', textShadow: '0 0 8px rgba(255, 157, 0, 0.4)' }}>{score}</span>
                 </div>
                 <div className="modal-stat-box">
                   <span className="modal-stat-label">Précision</span>
@@ -919,16 +1079,16 @@ export default function App() {
               {/* Review words */}
               {reviewWords.length > 0 && (
                 <div className="modal-word-review">
-                  <div className="modal-word-review-title">Mots non complétés à réviser :</div>
+                  <div className="modal-word-review-title">Mots cibles non détruits à réviser :</div>
                   {reviewWords.slice(0, 30).map((badge, idx) => (
                     <div key={idx} className="review-item">
-                      <span className="spelling">{badge.text}</span>
+                      <span className="spelling" style={{ color: 'var(--color-past)' }}>{badge.text}</span>
                       <span className="translation">{badge.translation} ({badge.tense})</span>
                     </div>
                   ))}
                   {reviewWords.length > 30 && (
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                      ... et {reviewWords.length - 30} autres badges.
+                      ... et {reviewWords.length - 30} autres cibles.
                     </div>
                   )}
                 </div>
@@ -936,7 +1096,7 @@ export default function App() {
 
               <div className="modal-actions">
                 <button className="modal-btn primary" onClick={startGame}>
-                  Rejouer
+                  Réinitialiser
                 </button>
                 <button 
                   className="modal-btn secondary" 
@@ -945,7 +1105,7 @@ export default function App() {
                     setShowGameOver(false);
                   }}
                 >
-                  Menu Principal
+                  Menu Terminal
                 </button>
               </div>
             </div>
@@ -957,8 +1117,8 @@ export default function App() {
           <div className="modal-overlay">
             <div className="settings-modal glass-panel">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 className="config-title" style={{ margin: 0 }}>
-                  <Volume2 size={22} style={{ color: 'var(--color-accent)' }} /> Configuration Vocale
+                <h3 className="config-title" style={{ margin: 0, border: 'none' }}>
+                  <Volume2 size={22} style={{ color: 'var(--text-cyber)' }} /> Paramètres Vocaux
                 </h3>
                 <button 
                   onClick={() => setShowSettings(false)} 
@@ -970,7 +1130,7 @@ export default function App() {
               </div>
 
               <div className="config-group">
-                <label className="config-label">Moteur de synthèse vocale</label>
+                <label className="config-label">Moteur vocal</label>
                 <select 
                   className="config-select" 
                   value={ttsEngine} 

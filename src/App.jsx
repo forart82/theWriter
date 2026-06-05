@@ -36,6 +36,16 @@ const formatTime = (seconds) => {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 };
 
+// Normalize text to simplify special French characters for typing keyboards
+const normalizeText = (str) => {
+  if (!str) return '';
+  return str
+    .toLowerCase()
+    .replace(/æ/g, 'ae')
+    .replace(/œ/g, 'oe')
+    .replace(/ç/g, 'c');
+};
+
 // Web Audio API Synthesizer Sound Generator
 const playSynthSound = (type) => {
   try {
@@ -554,7 +564,7 @@ export default function App() {
 
     // Prefix validation against active badges
     const isPrefixOfAny = badges.some(b => 
-      !b.isDestroyed && b.text.toLowerCase().startsWith(text.toLowerCase())
+      !b.isDestroyed && normalizeText(b.text).startsWith(normalizeText(text))
     );
 
     if (!isPrefixOfAny) {
@@ -589,7 +599,7 @@ export default function App() {
 
     // Match validation
     const matchingBadge = badges.find(b => 
-      !b.isDestroyed && b.text.toLowerCase() === text.trim().toLowerCase()
+      !b.isDestroyed && normalizeText(b.text) === normalizeText(text.trim())
     );
 
     if (matchingBadge) {
@@ -984,7 +994,7 @@ export default function App() {
                 <div className="badges-scrollable">
                   <div className="badges-grid">
                     {badges.map(badge => {
-                      const isHighlighted = typedText && badge.text.toLowerCase().startsWith(typedText.trim().toLowerCase());
+                      const isHighlighted = typedText && normalizeText(badge.text).startsWith(normalizeText(typedText.trim()));
                       let cardTypeClass = 'badge-elision';
                       let tenseLabel = 'Élision';
                       
